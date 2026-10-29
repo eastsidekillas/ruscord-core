@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
+	"github.com/google/uuid"
 )
 
 const (
@@ -158,6 +159,9 @@ func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, p)))
 	})
 }
+
+// UserID is the caller's id on a request that passed RequireAuth.
+func UserID(r *http.Request) uuid.UUID { return PrincipalFrom(r.Context()).UserID }
 
 // PrincipalFrom returns the caller set by RequireAuth.
 func PrincipalFrom(ctx context.Context) Principal {

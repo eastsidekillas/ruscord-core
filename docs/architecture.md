@@ -74,6 +74,9 @@ attachments, read_states, relationships, invites, calls, outbox
 Шаг 4b: `invites`; relay `internal/events` публикует outbox в JetStream
 (стрим `EVENTS`, ADR-0013).
 
+Шаг 4c-1: модуль `internal/social` с `relationships`, `dm_channels`,
+`dm_recipients` (ADR-0014). Лички больше не хранятся в `channels`.
+
 ## Права
 
 Пакет `internal/perm` (ADR-0011), чистые функции без БД:

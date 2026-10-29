@@ -57,19 +57,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	}
 }
 
-func me(r *http.Request) uuid.UUID { return auth.PrincipalFrom(r.Context()).UserID }
-
 // pathID parses a path id. A malformed id is just another missing object.
 func pathID(r *http.Request, name string) (uuid.UUID, error) {
-	v := r.PathValue(name)
-	if v == "@me" && name == "user" {
-		return me(r), nil
+	if name == "user" && r.PathValue(name) == "@me" {
+		return auth.UserID(r), nil
 	}
-	id, err := uuid.Parse(v)
-	if err != nil {
-		return uuid.Nil, ErrNotFound
-	}
-	return id, nil
+	return httpx.PathUUID(r, name)
 }
 
 func pathIDs(r *http.Request, names ...string) ([]uuid.UUID, error) {
@@ -85,7 +78,7 @@ func pathIDs(r *http.Request, names ...string) ([]uuid.UUID, error) {
 }
 
 func (h *Handler) listMine(w http.ResponseWriter, r *http.Request) error {
-	gs, err := h.svc.ListMine(r.Context(), me(r))
+	gs, err := h.svc.ListMine(r.Context(), auth.UserID(r))
 	if err != nil {
 		return err
 	}
@@ -98,7 +91,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	f, err := h.svc.Create(r.Context(), me(r), in)
+	f, err := h.svc.Create(r.Context(), auth.UserID(r), in)
 	if err != nil {
 		return err
 	}
@@ -111,7 +104,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	f, err := h.svc.Get(r.Context(), me(r), id)
+	f, err := h.svc.Get(r.Context(), auth.UserID(r), id)
 	if err != nil {
 		return err
 	}
@@ -128,7 +121,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	g, err := h.svc.Update(r.Context(), me(r), id, in)
+	g, err := h.svc.Update(r.Context(), auth.UserID(r), id, in)
 	if err != nil {
 		return err
 	}
@@ -141,11 +134,7 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if err := h.svc.Delete(r.Context(), me(r), id); err != nil {
-		return err
-	}
-	w.WriteHeader(http.StatusNoContent)
-	return nil
+	return httpx.NoContent(w, h.svc.Delete(r.Context(), auth.UserID(r), id))
 }
 
 func (h *Handler) listChannels(w http.ResponseWriter, r *http.Request) error {
@@ -153,7 +142,7 @@ func (h *Handler) listChannels(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	chs, err := h.svc.ListChannels(r.Context(), me(r), id)
+	chs, err := h.svc.ListChannels(r.Context(), auth.UserID(r), id)
 	if err != nil {
 		return err
 	}
@@ -170,7 +159,7 @@ func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	ch, err := h.svc.CreateChannel(r.Context(), me(r), id, in)
+	ch, err := h.svc.CreateChannel(r.Context(), auth.UserID(r), id, in)
 	if err != nil {
 		return err
 	}
@@ -187,7 +176,7 @@ func (h *Handler) updateChannel(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	ch, err := h.svc.UpdateChannel(r.Context(), me(r), id, in)
+	ch, err := h.svc.UpdateChannel(r.Context(), auth.UserID(r), id, in)
 	if err != nil {
 		return err
 	}
@@ -200,11 +189,7 @@ func (h *Handler) deleteChannel(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if err := h.svc.DeleteChannel(r.Context(), me(r), id); err != nil {
-		return err
-	}
-	w.WriteHeader(http.StatusNoContent)
-	return nil
+	return httpx.NoContent(w, h.svc.DeleteChannel(r.Context(), auth.UserID(r), id))
 }
 
 func (h *Handler) putOverwrite(w http.ResponseWriter, r *http.Request) error {
@@ -216,7 +201,7 @@ func (h *Handler) putOverwrite(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	ch, err := h.svc.PutOverwrite(r.Context(), me(r), ids[0], ids[1], in)
+	ch, err := h.svc.PutOverwrite(r.Context(), auth.UserID(r), ids[0], ids[1], in)
 	if err != nil {
 		return err
 	}
@@ -229,11 +214,7 @@ func (h *Handler) deleteOverwrite(w http.ResponseWriter, r *http.Request) error 
 	if err != nil {
 		return err
 	}
-	if err := h.svc.DeleteOverwrite(r.Context(), me(r), ids[0], ids[1]); err != nil {
-		return err
-	}
-	w.WriteHeader(http.StatusNoContent)
-	return nil
+	return httpx.NoContent(w, h.svc.DeleteOverwrite(r.Context(), auth.UserID(r), ids[0], ids[1]))
 }
 
 func (h *Handler) listRoles(w http.ResponseWriter, r *http.Request) error {
@@ -241,7 +222,7 @@ func (h *Handler) listRoles(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	roles, err := h.svc.ListRoles(r.Context(), me(r), id)
+	roles, err := h.svc.ListRoles(r.Context(), auth.UserID(r), id)
 	if err != nil {
 		return err
 	}
@@ -258,7 +239,7 @@ func (h *Handler) createRole(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	role, err := h.svc.CreateRole(r.Context(), me(r), id, in)
+	role, err := h.svc.CreateRole(r.Context(), auth.UserID(r), id, in)
 	if err != nil {
 		return err
 	}
@@ -275,7 +256,7 @@ func (h *Handler) updateRole(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	role, err := h.svc.UpdateRole(r.Context(), me(r), ids[0], ids[1], in)
+	role, err := h.svc.UpdateRole(r.Context(), auth.UserID(r), ids[0], ids[1], in)
 	if err != nil {
 		return err
 	}
@@ -288,11 +269,7 @@ func (h *Handler) deleteRole(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if err := h.svc.DeleteRole(r.Context(), me(r), ids[0], ids[1]); err != nil {
-		return err
-	}
-	w.WriteHeader(http.StatusNoContent)
-	return nil
+	return httpx.NoContent(w, h.svc.DeleteRole(r.Context(), auth.UserID(r), ids[0], ids[1]))
 }
 
 func (h *Handler) listMembers(w http.ResponseWriter, r *http.Request) error {
@@ -313,7 +290,7 @@ func (h *Handler) listMembers(w http.ResponseWriter, r *http.Request) error {
 			return httpx.NewError(http.StatusBadRequest, "invalid_request", "limit от 1 до 1000")
 		}
 	}
-	ms, err := h.svc.ListMembers(r.Context(), me(r), id, after, limit)
+	ms, err := h.svc.ListMembers(r.Context(), auth.UserID(r), id, after, limit)
 	if err != nil {
 		return err
 	}
@@ -330,11 +307,7 @@ func (h *Handler) updateSelf(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	if err := h.svc.UpdateSelf(r.Context(), me(r), id, in); err != nil {
-		return err
-	}
-	w.WriteHeader(http.StatusNoContent)
-	return nil
+	return httpx.NoContent(w, h.svc.UpdateSelf(r.Context(), auth.UserID(r), id, in))
 }
 
 func (h *Handler) removeMember(w http.ResponseWriter, r *http.Request) error {
@@ -342,11 +315,7 @@ func (h *Handler) removeMember(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if err := h.svc.RemoveMember(r.Context(), me(r), ids[0], ids[1]); err != nil {
-		return err
-	}
-	w.WriteHeader(http.StatusNoContent)
-	return nil
+	return httpx.NoContent(w, h.svc.RemoveMember(r.Context(), auth.UserID(r), ids[0], ids[1]))
 }
 
 func (h *Handler) addRole(w http.ResponseWriter, r *http.Request) error { return h.setRole(w, r, true) }
@@ -359,11 +328,7 @@ func (h *Handler) setRole(w http.ResponseWriter, r *http.Request, add bool) erro
 	if err != nil {
 		return err
 	}
-	if err := h.svc.SetMemberRole(r.Context(), me(r), ids[0], ids[1], ids[2], add); err != nil {
-		return err
-	}
-	w.WriteHeader(http.StatusNoContent)
-	return nil
+	return httpx.NoContent(w, h.svc.SetMemberRole(r.Context(), auth.UserID(r), ids[0], ids[1], ids[2], add))
 }
 
 func (h *Handler) createInvite(w http.ResponseWriter, r *http.Request) error {
@@ -375,7 +340,7 @@ func (h *Handler) createInvite(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	inv, err := h.svc.CreateInvite(r.Context(), me(r), id, in)
+	inv, err := h.svc.CreateInvite(r.Context(), auth.UserID(r), id, in)
 	if err != nil {
 		return err
 	}
@@ -388,7 +353,7 @@ func (h *Handler) listInvites(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	invs, err := h.svc.ListInvites(r.Context(), me(r), id)
+	invs, err := h.svc.ListInvites(r.Context(), auth.UserID(r), id)
 	if err != nil {
 		return err
 	}
@@ -397,7 +362,7 @@ func (h *Handler) listInvites(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *Handler) previewInvite(w http.ResponseWriter, r *http.Request) error {
-	p, err := h.svc.PreviewInvite(r.Context(), me(r), r.PathValue("code"))
+	p, err := h.svc.PreviewInvite(r.Context(), auth.UserID(r), r.PathValue("code"))
 	if err != nil {
 		return err
 	}
@@ -406,7 +371,7 @@ func (h *Handler) previewInvite(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *Handler) acceptInvite(w http.ResponseWriter, r *http.Request) error {
-	f, err := h.svc.AcceptInvite(r.Context(), me(r), r.PathValue("code"))
+	f, err := h.svc.AcceptInvite(r.Context(), auth.UserID(r), r.PathValue("code"))
 	if err != nil {
 		return err
 	}
@@ -415,9 +380,5 @@ func (h *Handler) acceptInvite(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *Handler) deleteInvite(w http.ResponseWriter, r *http.Request) error {
-	if err := h.svc.DeleteInvite(r.Context(), me(r), r.PathValue("code")); err != nil {
-		return err
-	}
-	w.WriteHeader(http.StatusNoContent)
-	return nil
+	return httpx.NoContent(w, h.svc.DeleteInvite(r.Context(), auth.UserID(r), r.PathValue("code")))
 }

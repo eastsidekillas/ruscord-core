@@ -13,11 +13,11 @@ import (
 
 type ChannelType int16
 
+// Channel types share the numbering of the client protocol; 1 and 3 are
+// direct messages, owned by internal/social.
 const (
 	ChannelText     ChannelType = 0
-	ChannelDM       ChannelType = 1
 	ChannelVoice    ChannelType = 2
-	ChannelGroupDM  ChannelType = 3
 	ChannelCategory ChannelType = 4
 )
 
