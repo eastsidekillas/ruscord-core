@@ -17,6 +17,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/hooks"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/slicex"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
@@ -50,7 +51,13 @@ type Service struct {
 	users   UserDirectory
 	limiter *ratelimit.Limiter
 	now     func() time.Time
+
+	channelsDeleted hooks.ChannelsDeleted
 }
+
+// OnChannelsDeleted registers the hook run when channels are deleted
+// (one channel, or every channel of a deleted guild).
+func (s *Service) OnChannelsDeleted(h hooks.ChannelsDeleted) { s.channelsDeleted = h }
 
 func NewService(pg *pgxpool.Pool, users UserDirectory, limiter *ratelimit.Limiter) *Service {
 	return &Service{pg: pg, users: users, limiter: limiter, now: time.Now}
@@ -242,6 +249,17 @@ func (s *Service) Delete(ctx context.Context, userID, guildID uuid.UUID) error {
 	return s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
 		if a.guild.OwnerID != userID {
 			return httpx.ErrForbidden
+		}
+		rows, err := tx.Query(ctx, `SELECT id FROM channels WHERE guild_id = $1`, guildID)
+		if err != nil {
+			return err
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+		if err != nil {
+			return err
+		}
+		if err := s.channelsDeleted.Run(ctx, tx, ids); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM guilds WHERE id = $1`, guildID); err != nil {
 			return err
@@ -443,6 +461,9 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 		if !p.Has(perm.ManageChannels) {
 			return httpx.ErrForbidden
 		}
+		if err := s.channelsDeleted.Run(ctx, tx, []uuid.UUID{ch.ID}); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM channels WHERE id = $1`, ch.ID); err != nil {
 			return err
 		}
@@ -451,6 +472,25 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 			Data: map[string]any{"id": ch.ID, "guild_id": ch.GuildID},
 		})
 	})
+}
+
+// ChannelPermissions returns the guild of a channel and the user's
+// permissions in it, for modules that act inside channels (messages). A
+// channel the user cannot view is reported as not found.
+func (s *Service) ChannelPermissions(ctx context.Context, userID, channelID uuid.UUID) (uuid.UUID, ChannelType, perm.Permissions, error) {
+	ch, err := getChannel(ctx, s.pg, channelID)
+	if err != nil {
+		return uuid.Nil, 0, 0, notFound(err)
+	}
+	a, err := loadAccess(ctx, s.pg, ch.GuildID, userID)
+	if err != nil {
+		return uuid.Nil, 0, 0, notFound(err)
+	}
+	p := a.in(ch)
+	if !p.Has(perm.ViewChannel) {
+		return uuid.Nil, 0, 0, httpx.ErrNotFound
+	}
+	return ch.GuildID, ch.Type, p, nil
 }
 
 // ListChannels returns the guild's channels that userID can view.

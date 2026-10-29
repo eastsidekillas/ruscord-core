@@ -189,7 +189,10 @@ func TestDirectMessages(t *testing.T) {
 	if _, _, err := e.svc.Permissions(t.Context(), dan.ID, dmID); err == nil {
 		t.Fatal("non-recipient got DM permissions")
 	}
-	ann.Expect(http.StatusForbidden, "POST", dms, map[string]any{"recipient_id": ann.ID})
+	// Self is a 400 "self", like a friend request to yourself.
+	if b := ann.Expect(http.StatusBadRequest, "POST", dms, map[string]any{"recipient_id": ann.ID}); obj(b)["code"] != "self" {
+		t.Fatalf("self DM = %v", b)
+	}
 }
 
 func TestGroupDMs(t *testing.T) {

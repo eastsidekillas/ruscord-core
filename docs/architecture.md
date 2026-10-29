@@ -77,6 +77,10 @@ attachments, read_states, relationships, invites, calls, outbox
 Шаг 4c-1: модуль `internal/social` с `relationships`, `dm_channels`,
 `dm_recipients` (ADR-0014). Лички больше не хранятся в `channels`.
 
+Шаг 4c-2: модуль `internal/message` с таблицей `messages` (ADR-0015). Права на
+канал он получает от guild и social через интерфейсы, а сообщения удаляются
+вместе с каналом через `hooks.ChannelsDeleted`.
+
 ## Права
 
 Пакет `internal/perm` (ADR-0011), чистые функции без БД:

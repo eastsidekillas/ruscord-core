@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -14,10 +15,14 @@ var ErrNotFound = NewError(http.StatusNotFound, "not_found", "Не найден�
 // Fields collects per-field validation messages.
 type Fields map[string]string
 
-// Length checks that v has between minLen and maxLen characters.
+// Length checks that v has between minLen and maxLen characters and no NUL,
+// which Postgres text cannot store (it would surface as a 500).
 func (f Fields) Length(key, v string, minLen, maxLen int) {
-	if n := utf8.RuneCountInString(v); n < minLen || n > maxLen {
+	switch n := utf8.RuneCountInString(v); {
+	case n < minLen || n > maxLen:
 		f[key] = "Длина от " + strconv.Itoa(minLen) + " до " + strconv.Itoa(maxLen) + " символов"
+	case strings.ContainsRune(v, 0):
+		f[key] = "Недопустимый символ"
 	}
 }
 
