@@ -10,6 +10,19 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_USER: ruscord
+          POSTGRES_PASSWORD: ruscord
+          POSTGRES_DB: ruscord_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ruscord -d ruscord_test"
+          --health-interval 5s --health-retries 10
+    env:
+      RUSCORD_TEST_POSTGRES_URL: postgres://ruscord:ruscord@127.0.0.1:5432/ruscord_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -43,8 +56,16 @@ jobs:
           docker compose --env-file .env -f deploy/docker-compose.yml --profile app up -d --build --wait --wait-timeout 180 postgres valkey
           docker compose --env-file .env -f deploy/docker-compose.yml --profile app up -d --build nats livekit app
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/readyz; then exit 0; fi
+            if curl -fsS http://127.0.0.1:8080/readyz; then ready=1; break; fi
             sleep 2
           done
-          docker compose --env-file .env -f deploy/docker-compose.yml --profile app logs
-          exit 1
+          if [ -z "${ready:-}" ]; then
+            docker compose --env-file .env -f deploy/docker-compose.yml --profile app logs
+            exit 1
+          fi
+      - name: register and read profile through the running stack
+        run: |
+          curl -fsS -c jar -H 'Content-Type: application/json' \
+            -d '{"email":"ci@example.com","username":"ci_user","password":"ci-password-1"}' \
+            http://127.0.0.1:8080/api/v1/auth/register
+          curl -fsS -b jar http://127.0.0.1:8080/api/v1/users/@me | grep -q '"username":"ci_user"'
