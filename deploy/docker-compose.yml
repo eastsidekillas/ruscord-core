@@ -1,0 +1,73 @@
+# Local development stack. Everything binds to 127.0.0.1 only.
+#   make up        – start infrastructure
+#   make up-app    – infrastructure + the ruscord binary in a container
+# Secrets come from ../.env (copy .env.example). Never commit .env.
+name: ruscord
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_USER: ruscord
+      POSTGRES_PASSWORD: ${RUSCORD_PG_PASSWORD:?set RUSCORD_PG_PASSWORD in .env}
+      POSTGRES_DB: ruscord
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: ["pg:/var/lib/postgresql"]   # Postgres 18 images keep data under /var/lib/postgresql/18
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ruscord -d ruscord"]
+      interval: 5s
+      retries: 10
+
+  valkey:
+    # Valkey: BSD-licensed Redis fork, wire-compatible with go-redis (see docs/adr/0010).
+    image: valkey/valkey:9.1.2-alpine
+    command: ["valkey-server", "--requirepass", "${RUSCORD_REDIS_PASSWORD:?set RUSCORD_REDIS_PASSWORD in .env}", "--appendonly", "yes"]
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: ["valkey:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$RUSCORD_REDIS_PASSWORD\" --no-auth-warning ping | grep PONG"]
+      interval: 5s
+      retries: 10
+    environment:
+      RUSCORD_REDIS_PASSWORD: ${RUSCORD_REDIS_PASSWORD}
+
+  nats:
+    image: nats:2.15.2-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"   # clients
+      - "127.0.0.1:8222:8222"   # monitoring
+    volumes: ["nats:/data"]
+
+  livekit:
+    image: livekit/livekit-server:v1.13.10
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      # "<key>: <secret>" pairs; the secret must be 32+ characters.
+      LIVEKIT_KEYS: "${RUSCORD_LIVEKIT_API_KEY:?set in .env}: ${RUSCORD_LIVEKIT_API_SECRET:?set in .env}"
+    volumes: ["./livekit.dev.yaml:/etc/livekit.yaml:ro"]
+    ports:
+      - "127.0.0.1:7880:7880"           # signaling / API
+      - "127.0.0.1:7881:7881"           # ICE over TCP
+      - "127.0.0.1:50000-50100:50000-50100/udp"   # media; small range is enough locally
+
+  app:
+    profiles: ["app"]
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    env_file: [../.env]
+    environment:
+      RUSCORD_HTTP_ADDR: 0.0.0.0:8080
+      RUSCORD_POSTGRES_URL: postgres://ruscord:${RUSCORD_PG_PASSWORD}@postgres:5432/ruscord?sslmode=disable
+      RUSCORD_REDIS_ADDR: valkey:6379
+      RUSCORD_NATS_URL: nats://nats:4222
+      RUSCORD_LIVEKIT_URL: ws://livekit:7880
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      valkey: { condition: service_healthy }
+      nats: { condition: service_started }
+
+volumes:
+  pg:
+  valkey:
+  nats:

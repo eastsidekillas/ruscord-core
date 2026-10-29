@@ -1,0 +1,50 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - run: go build ./cmd/ruscord
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.15.0
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: generate .env
+        run: ./scripts/gen-env.sh > .env
+      - name: validate compose file
+        run: docker compose --env-file .env -f deploy/docker-compose.yml --profile app config --quiet
+      - name: start stack and check readiness
+        run: |
+          docker compose --env-file .env -f deploy/docker-compose.yml --profile app up -d --build --wait --wait-timeout 180 postgres valkey
+          docker compose --env-file .env -f deploy/docker-compose.yml --profile app up -d --build nats livekit app
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/readyz; then exit 0; fi
+            sleep 2
+          done
+          docker compose --env-file .env -f deploy/docker-compose.yml --profile app logs
+          exit 1
