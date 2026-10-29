@@ -22,6 +22,7 @@ import (
 
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/config"
+	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/health"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/logx"
@@ -110,7 +111,9 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		auth.NewHandler(svc, !cfg.IsDev()).Register(mux)
+		authHTTP := auth.NewHandler(svc, !cfg.IsDev())
+		authHTTP.Register(mux)
+		guild.NewHandler(guild.NewService(clients.PG, svc), authHTTP.RequireAuth).Register(mux)
 	}
 
 	handler := httpx.Recover(httpx.CheckOrigin(cfg.AllowedOrigins, mux))

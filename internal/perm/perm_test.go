@@ -320,3 +320,19 @@ func TestVoice(t *testing.T) {
 		})
 	}
 }
+
+func TestJSON(t *testing.T) {
+	b, err := (ViewChannel | Administrator).MarshalJSON()
+	if err != nil || string(b) != `"33554433"` {
+		t.Fatalf("MarshalJSON = %s, %v", b, err)
+	}
+	var p Permissions
+	if err := p.UnmarshalJSON([]byte(`"1024"`)); err != nil || p != Stream {
+		t.Fatalf("UnmarshalJSON = %v, %v", p, err)
+	}
+	for _, bad := range []string{`1024`, `"-1"`, `"abc"`} {
+		if err := p.UnmarshalJSON([]byte(bad)); err == nil {
+			t.Errorf("UnmarshalJSON(%s) succeeded", bad)
+		}
+	}
+}
