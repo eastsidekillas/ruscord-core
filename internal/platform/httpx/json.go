@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -33,17 +34,49 @@ var (
 	ErrForbidden    = NewError(http.StatusForbidden, "forbidden", "Недостаточно прав")
 )
 
+var errBodyTooLarge = NewError(http.StatusRequestEntityTooLarge, "body_too_large", "Тело запроса больше 1 МиБ")
+
 // DecodeJSON reads a JSON body of at most 1 MiB and rejects unknown fields.
+// Errors name the field but never echo decoder internals.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		return NewError(http.StatusBadRequest, "invalid_request", fmt.Sprintf("Некорректный JSON: %v", err))
+		return decodeError(err)
 	}
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return errBodyTooLarge
+		}
 		return NewError(http.StatusBadRequest, "invalid_request", "Тело запроса должно содержать один JSON-объект")
 	}
 	return nil
+}
+
+func decodeError(err error) error {
+	var (
+		tooLarge *http.MaxBytesError
+		typeErr  *json.UnmarshalTypeError
+		synErr   *json.SyntaxError
+	)
+	msg := "Некорректный JSON"
+	switch {
+	case errors.As(err, &tooLarge):
+		return errBodyTooLarge
+	case errors.Is(err, io.EOF):
+		msg = "Пустое тело запроса, ожидается JSON-объект"
+	case errors.As(err, &typeErr) && typeErr.Field != "":
+		msg = fmt.Sprintf("Поле %q: неверный тип значения", typeErr.Field)
+	case errors.As(err, &typeErr), errors.As(err, &synErr), errors.Is(err, io.ErrUnexpectedEOF):
+	case strings.HasPrefix(err.Error(), "json: unknown field "):
+		// encoding/json has no typed error for this one.
+		msg = "Неизвестное поле " + strings.TrimPrefix(err.Error(), "json: unknown field ")
+	default:
+		// Custom UnmarshalJSON errors, e.g. a permissions string that is not a number.
+		msg = "Некорректное значение в JSON"
+	}
+	return NewError(http.StatusBadRequest, "invalid_request", msg)
 }
 
 func WriteJSON(w http.ResponseWriter, status int, v any) {

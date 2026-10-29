@@ -33,7 +33,7 @@ const (
 )
 
 var (
-	errNotText    = httpx.NewError(http.StatusBadRequest, "not_text_channel", "В этом канале нельзя писать сообщения")
+	errNotText    = httpx.NewError(http.StatusBadRequest, "not_text_channel", "Сообщения есть только в текстовых каналах: здесь их нельзя ни читать, ни писать")
 	errNotAuthor  = httpx.NewError(http.StatusForbidden, "forbidden", "Редактировать можно только свои сообщения")
 	errBadReply   = httpx.Validation(map[string]string{"reply_to": "Сообщение не найдено в этом канале"})
 	ruleSend      = ratelimit.Rule{Name: "message_send", Limit: 10, Window: 10 * time.Second}

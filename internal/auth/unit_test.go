@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -116,5 +117,19 @@ func TestRegisterValidation(t *testing.T) {
 				t.Fatalf("want error on %s, got %v", tt.field, err)
 			}
 		})
+	}
+}
+
+func TestClientInfoDevice(t *testing.T) {
+	for _, c := range []struct{ ua, want string }{
+		{"Firefox", "Firefox"},
+		{"a\x00b\xffc", "abc"},
+		{strings.Repeat("я", maxDevice+5), strings.Repeat("я", maxDevice)},
+	} {
+		r := httptest.NewRequestWithContext(t.Context(), "GET", "/", nil)
+		r.Header.Set("User-Agent", c.ua)
+		if got := clientInfo(r).Device; got != c.want {
+			t.Errorf("%q: device %q, want %q", c.ua, got, c.want)
+		}
 	}
 }

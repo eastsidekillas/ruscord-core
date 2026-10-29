@@ -60,6 +60,7 @@ func TestInvites(t *testing.T) {
 	// Validation and malformed codes.
 	owner.Expect(http.StatusUnprocessableEntity, "POST", "/api/v1/channels/"+text+"/invites", map[string]any{"max_age": 604801})
 	owner.Expect(http.StatusUnprocessableEntity, "POST", "/api/v1/channels/"+text+"/invites", map[string]any{"max_uses": 101})
+	owner.Expect(http.StatusUnprocessableEntity, "POST", "/api/v1/channels/"+text+"/invites", map[string]any{"max_age": int64(9e18)})
 	dave.Expect(http.StatusNotFound, "GET", "/api/v1/invites/short", nil)
 	dave.Expect(http.StatusNotFound, "GET", "/api/v1/invites/"+strings.Repeat("Z", 8), nil)
 

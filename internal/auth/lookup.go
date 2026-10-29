@@ -72,6 +72,9 @@ func (s *Service) Users(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Pub
 
 // UserByUsername finds a public profile by username, ignoring case.
 func (s *Service) UserByUsername(ctx context.Context, username string) (PublicUser, error) {
+	if !usernameRe.MatchString(username) {
+		return PublicUser{}, httpx.ErrNotFound // cannot exist; also keeps NUL away from Postgres
+	}
 	var u PublicUser
 	err := s.store.pg.QueryRow(ctx,
 		`SELECT `+publicCols+` FROM users WHERE username = $1`, username).

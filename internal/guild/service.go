@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -180,6 +179,9 @@ func (s *Service) full(ctx context.Context, q querier, guildID, userID uuid.UUID
 		}
 	}
 	m := a.full
+	if err := s.attachUsers(ctx, []*Member{&m}); err != nil {
+		return Full{}, err
+	}
 	return Full{Guild: a.guild, Roles: a.roles, Channels: visible, Member: &m, Permissions: a.base()}, nil
 }
 
@@ -283,9 +285,7 @@ type CreateChannelInput struct {
 
 func validateChannel(fields httpx.Fields, typ ChannelType, name, topic string, userLimit, bitrate int) {
 	fields.Length("name", name, 1, 100)
-	if utf8.RuneCountInString(topic) > 1024 {
-		fields["topic"] = "Не длиннее 1024 символов"
-	}
+	fields.Length("topic", topic, 0, 1024)
 	if userLimit < 0 || userLimit > 99 {
 		fields["user_limit"] = "От 0 до 99"
 	}
@@ -514,11 +514,12 @@ func (s *Service) PutOverwrite(ctx context.Context, userID, channelID, targetID 
 	if in.Type != perm.TargetRole && in.Type != perm.TargetMember {
 		fields["type"] = "1 (роль) или 2 (участник)"
 	}
-	if in.Allow&^perm.All != 0 {
-		fields["allow"] = "Неизвестные биты"
+	// ADMINISTRATOR is guild-wide only; in a channel it would mean nothing.
+	if in.Allow&^perm.All != 0 || in.Allow.Has(perm.Administrator) {
+		fields["allow"] = "Неизвестные биты или ADMINISTRATOR"
 	}
-	if in.Deny&^perm.All != 0 {
-		fields["deny"] = "Неизвестные биты"
+	if in.Deny&^perm.All != 0 || in.Deny.Has(perm.Administrator) {
+		fields["deny"] = "Неизвестные биты или ADMINISTRATOR"
 	}
 	if in.Allow&in.Deny != 0 {
 		fields["deny"] = "Бит не может быть одновременно в allow и deny"
@@ -751,6 +752,31 @@ func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID uuid.U
 	return out, err
 }
 
+// dropOverwrites deletes the channel overwrites of a role or member that is
+// going away and tells clients which channels changed.
+func dropOverwrites(ctx context.Context, tx pgx.Tx, guildID uuid.UUID, typ perm.TargetType, targetID uuid.UUID) error {
+	rows, err := tx.Query(ctx,
+		`DELETE FROM permission_overwrites o USING channels c
+		 WHERE o.channel_id = c.id AND c.guild_id = $1 AND o.target_type = $2 AND o.target_id = $3
+		 RETURNING o.channel_id`, guildID, typ, targetID)
+	if err != nil {
+		return err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return err
+	}
+	evs := make([]events.Event, 0, len(ids))
+	for _, id := range ids {
+		ch, err := getChannel(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		evs = append(evs, events.Event{Topic: events.GuildTopic(guildID), Type: events.ChannelUpdate, Data: ch})
+	}
+	return events.Write(ctx, tx, evs...)
+}
+
 // moveRole shifts the roles between from and to by one so that the role at
 // from can take position to. Positions stay contiguous.
 func moveRole(ctx context.Context, tx pgx.Tx, guildID uuid.UUID, from, to int) error {
@@ -775,6 +801,9 @@ func (s *Service) DeleteRole(ctx context.Context, userID, guildID, roleID uuid.U
 		}
 		if !perm.CanAssignRole(a.pg, a.member, perm.Role{ID: r.ID, Position: r.Position, Permissions: r.Permissions}) {
 			return httpx.ErrForbidden
+		}
+		if err := dropOverwrites(ctx, tx, guildID, perm.TargetRole, r.ID); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM roles WHERE id = $1`, r.ID); err != nil {
 			return err
@@ -837,15 +866,22 @@ func (s *Service) attachUsers(ctx context.Context, ms []*Member) error {
 		func(m *Member, u auth.PublicUser) { m.User = u })
 }
 
+// maxMemberPage is the largest page of GET /guilds/{id}/members.
+const maxMemberPage = 1000
+
 // ListMembers pages through members ordered by user id.
-func (s *Service) ListMembers(ctx context.Context, userID, guildID, after uuid.UUID, limit int) ([]Member, error) {
+func (s *Service) ListMembers(ctx context.Context, userID, guildID uuid.UUID, after *uuid.UUID, limit int) ([]Member, error) {
 	if _, err := getMember(ctx, s.pg, guildID, userID); err != nil {
 		return nil, notFound(err)
 	}
-	if limit <= 0 || limit > 1000 {
+	if limit <= 0 || limit > maxMemberPage {
 		limit = 100
 	}
-	ms, err := listMembers(ctx, s.pg, guildID, after, limit)
+	var from uuid.UUID // uuid.Nil sorts first
+	if after != nil {
+		from = *after
+	}
+	ms, err := listMembers(ctx, s.pg, guildID, from, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -917,10 +953,7 @@ func (s *Service) RemoveMember(ctx context.Context, userID, guildID, targetID uu
 		if _, err := tx.Exec(ctx, `DELETE FROM members WHERE guild_id = $1 AND user_id = $2`, guildID, targetID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM permission_overwrites o USING channels c
-			 WHERE o.channel_id = c.id AND c.guild_id = $1 AND o.target_type = 2 AND o.target_id = $2`,
-			guildID, targetID); err != nil {
+		if err := dropOverwrites(ctx, tx, guildID, perm.TargetMember, targetID); err != nil {
 			return err
 		}
 		return events.Write(ctx, tx,
@@ -952,10 +985,10 @@ func (s *Service) UpdateSelf(ctx context.Context, userID, guildID uuid.UUID, in 
 			return err
 		}
 	}
-	if !in.Nick.Set {
-		return nil
-	}
 	return s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
+		if !in.Nick.Set {
+			return nil // nothing to change, but still 404 for non-members
+		}
 		if !a.base().Has(perm.ChangeNickname) {
 			return httpx.ErrForbidden
 		}

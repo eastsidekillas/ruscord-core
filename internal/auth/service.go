@@ -103,6 +103,8 @@ type RegisterInput struct {
 
 var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_.]{2,32}$`)
 
+const maxEmail = 254
+
 func (in *RegisterInput) normalize() *httpx.Error {
 	in.Email = strings.TrimSpace(in.Email)
 	in.Username = strings.TrimSpace(in.Username)
@@ -112,7 +114,7 @@ func (in *RegisterInput) normalize() *httpx.Error {
 	}
 
 	fields := httpx.Fields{}
-	if addr, err := mail.ParseAddress(in.Email); err != nil || addr.Address != in.Email || len(in.Email) > 254 {
+	if addr, err := mail.ParseAddress(in.Email); err != nil || addr.Address != in.Email || len(in.Email) > maxEmail {
 		fields["email"] = "Некорректный email"
 	}
 	switch {
@@ -185,6 +187,11 @@ func (s *Service) Login(ctx context.Context, in LoginInput, c ClientInfo) (Token
 	email := strings.ToLower(strings.TrimSpace(in.Email))
 	if err := s.limit(ctx, ruleLoginIP, c.IP); err != nil {
 		return Tokens{}, err
+	}
+	// An address longer than any stored one cannot match; refusing it early
+	// also keeps rate-limit keys short.
+	if len(email) > maxEmail {
+		return Tokens{}, ErrInvalidCredentials
 	}
 	if err := s.limit(ctx, ruleLoginEmail, email); err != nil {
 		return Tokens{}, err
@@ -354,5 +361,3 @@ func parseIP(s string) netip.Addr {
 	}
 	return a
 }
-
-func parseUUID(s string) (uuid.UUID, error) { return uuid.Parse(s) }

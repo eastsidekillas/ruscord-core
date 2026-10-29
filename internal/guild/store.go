@@ -104,7 +104,7 @@ func listChannels(ctx context.Context, q querier, guildID uuid.UUID) ([]Channel,
 func getChannel(ctx context.Context, q querier, id uuid.UUID) (Channel, error) {
 	rows, err := q.Query(ctx,
 		`SELECT id, guild_id, type, COALESCE(name, ''), COALESCE(topic, ''), parent_id, position, user_limit, bitrate
-		 FROM channels WHERE id = $1 AND guild_id IS NOT NULL`, id)
+		 FROM channels WHERE id = $1`, id)
 	if err != nil {
 		return Channel{}, err
 	}

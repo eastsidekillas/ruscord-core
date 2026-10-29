@@ -2,7 +2,6 @@ package guild
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/google/uuid"
 
@@ -46,12 +45,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"DELETE /api/v1/guilds/{guild}/members/{user}":              h.removeMember,
 		"PUT /api/v1/guilds/{guild}/members/{user}/roles/{role}":    h.addRole,
 		"DELETE /api/v1/guilds/{guild}/members/{user}/roles/{role}": h.removeRole,
+
+		"POST /api/v1/channels/{channel}/invites": h.createInvite,
+		"GET /api/v1/guilds/{guild}/invites":      h.listInvites,
+		"GET /api/v1/invites/{code}":              h.previewInvite,
+		"POST /api/v1/invites/{code}":             h.acceptInvite,
+		"DELETE /api/v1/invites/{code}":           h.deleteInvite,
 	}
-	routes["POST /api/v1/channels/{channel}/invites"] = h.createInvite
-	routes["GET /api/v1/guilds/{guild}/invites"] = h.listInvites
-	routes["GET /api/v1/invites/{code}"] = h.previewInvite
-	routes["POST /api/v1/invites/{code}"] = h.acceptInvite
-	routes["DELETE /api/v1/invites/{code}"] = h.deleteInvite
 	for pattern, fn := range routes {
 		mux.Handle(pattern, h.requireAuth(httpx.Handle(fn)))
 	}
@@ -278,17 +278,13 @@ func (h *Handler) listMembers(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	q := r.URL.Query()
-	var after uuid.UUID
-	if v := q.Get("after"); v != "" {
-		if after, err = uuid.Parse(v); err != nil {
-			return httpx.NewError(http.StatusBadRequest, "invalid_request", "after должен быть id пользователя")
-		}
+	after, err := httpx.QueryUUID(q, "after", "id пользователя")
+	if err != nil {
+		return err
 	}
-	limit := 0
-	if v := q.Get("limit"); v != "" {
-		if limit, err = strconv.Atoi(v); err != nil || limit < 1 || limit > 1000 {
-			return httpx.NewError(http.StatusBadRequest, "invalid_request", "limit от 1 до 1000")
-		}
+	limit, err := httpx.QueryLimit(q, maxMemberPage)
+	if err != nil {
+		return err
 	}
 	ms, err := h.svc.ListMembers(r.Context(), auth.UserID(r), id, after, limit)
 	if err != nil {

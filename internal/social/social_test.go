@@ -86,7 +86,12 @@ func TestFriendRequests(t *testing.T) {
 	}
 
 	ann.Expect(http.StatusBadRequest, "PUT", rels+"/"+ann.ID.String(), map[string]any{})
-	ann.Expect(http.StatusBadRequest, "POST", rels, map[string]any{"username": "nobody"})
+	// Unknown, impossible and NUL-laden usernames all look the same.
+	for _, name := range []string{"nobody", "x", "bob\x00", strings.Repeat("b", 40)} {
+		if body := obj(ann.Expect(http.StatusBadRequest, "POST", rels, map[string]any{"username": name})); body["code"] != "request_failed" {
+			t.Errorf("%q: %v", name, body)
+		}
+	}
 	ann.Expect(http.StatusUnprocessableEntity, "PUT", rels+"/"+bob.ID.String(), map[string]any{"type": 3})
 	ann.Expect(http.StatusNotFound, "PUT", rels+"/not-a-uuid", map[string]any{})
 

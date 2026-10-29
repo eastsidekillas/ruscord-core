@@ -2,7 +2,6 @@ package message
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/google/uuid"
 
@@ -59,22 +58,17 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) error {
 	}
 	q := r.URL.Query()
 	var pg Page
-	for key, dst := range map[string]**uuid.UUID{"before": &pg.Before, "after": &pg.After} {
-		if v := q.Get(key); v != "" {
-			id, err := uuid.Parse(v)
-			if err != nil {
-				return httpx.NewError(http.StatusBadRequest, "invalid_request", key+" должен быть id сообщения")
-			}
-			*dst = &id
-		}
+	if pg.Before, err = httpx.QueryUUID(q, "before", "id сообщения"); err != nil {
+		return err
+	}
+	if pg.After, err = httpx.QueryUUID(q, "after", "id сообщения"); err != nil {
+		return err
 	}
 	if pg.Before != nil && pg.After != nil {
 		return httpx.NewError(http.StatusBadRequest, "invalid_request", "Укажите before или after, не оба")
 	}
-	if v := q.Get("limit"); v != "" {
-		if pg.Limit, err = strconv.Atoi(v); err != nil || pg.Limit < 1 || pg.Limit > maxLimit {
-			return httpx.NewError(http.StatusBadRequest, "invalid_request", "limit от 1 до 100")
-		}
+	if pg.Limit, err = httpx.QueryLimit(q, maxLimit); err != nil {
+		return err
 	}
 	ms, err := h.svc.History(r.Context(), auth.UserID(r), ch, pg)
 	if err != nil {
