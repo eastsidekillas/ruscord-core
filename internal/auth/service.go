@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/mail"
@@ -134,24 +133,13 @@ func (in *RegisterInput) normalize() *httpx.Error {
 		fields["password"] = "Пароль не должен совпадать с email или именем"
 	}
 	if len(fields) > 0 {
-		e := httpx.NewError(http.StatusUnprocessableEntity, "validation_failed", "Проверьте поля формы")
-		e.Fields = fields
-		return e
+		return httpx.Validation(fields)
 	}
 	return nil
 }
 
 func (s *Service) limit(ctx context.Context, rule ratelimit.Rule, key string) error {
-	ok, retry, err := s.limiter.Allow(ctx, rule, key)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		secs := int(retry.Round(time.Second) / time.Second)
-		return httpx.NewError(http.StatusTooManyRequests, "rate_limited",
-			fmt.Sprintf("Слишком много попыток, повторите через %d с", max(secs, 1)))
-	}
-	return nil
+	return s.limiter.Check(ctx, rule, key)
 }
 
 func (s *Service) Register(ctx context.Context, in RegisterInput, c ClientInfo) (Tokens, error) {
@@ -165,7 +153,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput, c ClientInfo) 
 	if err != nil {
 		return Tokens{}, err
 	}
-	now := s.now().UTC()
+	// Postgres keeps microseconds; truncate so this answer matches later reads.
+	now := s.now().UTC().Truncate(time.Microsecond)
 	u := User{
 		ID:           uuid.Must(uuid.NewV7()),
 		Email:        in.Email,

@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -19,7 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
-	platformstore "github.com/eastsidekillas/ruscord-core/internal/platform/store"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/testdb"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
 
@@ -44,41 +42,8 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	url := os.Getenv("RUSCORD_TEST_POSTGRES_URL")
-	if url == "" {
-		t.Skip("RUSCORD_TEST_POSTGRES_URL not set")
-	}
+	pg := testdb.New(t)
 	ctx := context.Background()
-	schema := "t_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-
-	admin, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS citext"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
-		admin.Close()
-	})
-
-	cfg, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
-	pg, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pg.Close)
-	if err := platformstore.Migrate(ctx, pg, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
-		t.Fatal(err)
-	}
 
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -181,6 +146,16 @@ func TestRegisterLoginMe(t *testing.T) {
 	resp, me := c.do("GET", "/api/v1/users/@me", nil)
 	if resp.StatusCode != 200 || me["username"] != "timofey" {
 		t.Fatalf("@me: %d %v", resp.StatusCode, me)
+	}
+
+	// The register answer and later reads must show the same timestamp
+	// (Postgres keeps microseconds, the Go clock has nanoseconds).
+	e.clock.Add(123456789 * time.Nanosecond)
+	c3 := e.client(t)
+	u3 := register(t, c3, "precise")
+	_, me3 := c3.do("GET", "/api/v1/users/@me", nil)
+	if u3["created_at"] != me3["created_at"] {
+		t.Fatalf("created_at: register %v, @me %v", u3["created_at"], me3["created_at"])
 	}
 
 	c2 := e.client(t)

@@ -71,6 +71,9 @@ attachments, read_states, relationships, invites, calls, outbox
 `internal/guild` загружает входные данные для `internal/perm`, пользователей
 получает через интерфейс `UserDirectory` из `internal/auth`.
 
+Шаг 4b: `invites`; relay `internal/events` публикует outbox в JetStream
+(стрим `EVENTS`, ADR-0013).
+
 ## Права
 
 Пакет `internal/perm` (ADR-0011), чистые функции без БД:

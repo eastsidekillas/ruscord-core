@@ -31,6 +31,13 @@ var (
 	ErrForbidden    = NewError(http.StatusForbidden, "forbidden", "Недостаточно прав")
 )
 
+// Validation is the 422 answer for a form with per-field messages.
+func Validation(fields map[string]string) *Error {
+	e := NewError(http.StatusUnprocessableEntity, "validation_failed", "Проверьте поля формы")
+	e.Fields = fields
+	return e
+}
+
 // DecodeJSON reads a JSON body of at most 1 MiB and rejects unknown fields.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))

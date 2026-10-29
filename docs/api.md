@@ -86,7 +86,8 @@ username; email уникален без учёта регистра.
 по умолчанию 64000) только у голосовых. Категории не вкладываются.
 
 Роль: `{id, guild_id, name, position, permissions, color}`. У @everyone id сервера
-и позиция 0, его нельзя удалить, переименовать, переместить или выдать.
+и позиция 0. Его нельзя удалить, переименовать, переместить или выдать
+(400 `everyone_role`, у каждого случая свой текст), но можно менять его права.
 
 Участник: `{guild_id, user_id, nick, roles, joined_at, user: {id, username, display_name}}`.
 
@@ -94,3 +95,30 @@ username; email уникален без учёта регистра.
 `GUILD_DELETE`, `CHANNEL_CREATE/UPDATE/DELETE`, `GUILD_ROLE_CREATE/UPDATE/DELETE`
 (с полным списком ролей, потому что позиции сдвигаются), `GUILD_MEMBER_ADD/UPDATE/REMOVE`.
 Изменение переопределений прав приходит как `CHANNEL_UPDATE`.
+
+Лимиты частоты на пользователя: создание сервера 10/час, канала 30/мин, роли
+30/мин, приглашения 20/мин. Ответ 429 `rate_limited`.
+
+## Приглашения
+
+| Метод и путь | Тело | Ответ | Права |
+|---|---|---|---|
+| `POST /channels/{id}/invites` | `{max_age?, max_uses?}` (можно `{}`) | 201, приглашение | `CREATE_INVITE` в канале; не для категорий |
+| `GET /guilds/{id}/invites` | — | 200, все приглашения сервера | `MANAGE_GUILD` |
+| `GET /invites/{code}` | — | 200, превью | любой вошедший пользователь |
+| `POST /invites/{code}` | — | 200, полный сервер | любой вошедший пользователь |
+| `DELETE /invites/{code}` | — | 204 | создатель, `MANAGE_CHANNELS` в канале или `MANAGE_GUILD` |
+
+- `max_age` в секундах: по умолчанию 86400 (сутки), 0 бессрочно, максимум 604800 (неделя).
+- `max_uses` от 0 (без ограничений) до 100.
+- Просроченный или исчерпанный код отвечает 404, как и несуществующий.
+- Повторный `POST /invites/{code}` от участника сервера отвечает 200 и не тратит использование.
+- Просмотр и вход по коду вместе ограничены 30/мин на пользователя, чтобы коды нельзя было перебирать.
+
+Приглашение: `{code, guild_id, channel_id, inviter_id, inviter?, max_uses, uses, expires_at, created_at}`.
+Превью: `{code, guild: {id, name}, channel: {id, name, type}, inviter?, member_count, expires_at}`.
+Код: 8 символов `[A-Za-z0-9]`.
+
+События: `INVITE_CREATE`, `INVITE_DELETE` в топик сервера; gateway отдаёт их
+только тем, у кого `MANAGE_GUILD` (шаг 5). Вход по приглашению порождает
+`GUILD_MEMBER_ADD` и личный `GUILD_CREATE`.
