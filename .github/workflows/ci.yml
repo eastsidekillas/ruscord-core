@@ -63,9 +63,12 @@ jobs:
             docker compose --env-file .env -f deploy/docker-compose.yml --profile app logs
             exit 1
           fi
-      - name: register and read profile through the running stack
+      - name: register, read profile and create a guild through the running stack
         run: |
           curl -fsS -c jar -H 'Content-Type: application/json' \
             -d '{"email":"ci@example.com","username":"ci_user","password":"ci-password-1"}' \
             http://127.0.0.1:8080/api/v1/auth/register
           curl -fsS -b jar http://127.0.0.1:8080/api/v1/users/@me | grep -q '"username":"ci_user"'
+          curl -fsS -b jar -H 'Content-Type: application/json' -d '{"name":"CI guild"}' \
+            http://127.0.0.1:8080/api/v1/guilds | grep -q '"name":"general"'
+          curl -fsS -b jar http://127.0.0.1:8080/api/v1/users/@me/guilds | grep -q '"name":"CI guild"'

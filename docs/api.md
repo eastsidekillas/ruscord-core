@@ -44,3 +44,53 @@ username; email уникален без учёта регистра.
 
 Лимиты: вход 20/мин с IP и 5/мин на email, регистрация 5/час с IP, refresh
 30/мин на сессию, тикеты 30/мин на сессию.
+
+## Серверы, каналы, роли, участники
+
+Все запросы требуют `rc_at`. Если сервера нет или вы не участник, ответ 404
+`not_found`; так же для канала без `VIEW_CHANNEL`. 403 `forbidden` означает,
+что объект виден, но прав на действие нет. Права (`permissions`, `allow`,
+`deny`) передаются строкой с десятичным числом, биты описаны в
+`internal/perm/perm.go` и ADR-0011.
+
+| Метод и путь | Тело | Ответ | Права |
+|---|---|---|---|
+| `GET /users/@me/guilds` | — | 200, `[guild]` | — |
+| `POST /guilds` | `{name}` | 201, полный сервер | лимит 100 серверов на пользователя |
+| `GET /guilds/{id}` | — | 200, полный сервер | участник |
+| `PATCH /guilds/{id}` | `{name?}` | 200, guild | `MANAGE_GUILD` |
+| `DELETE /guilds/{id}` | — | 204 | только владелец |
+| `GET /guilds/{id}/channels` | — | 200, видимые каналы | участник |
+| `POST /guilds/{id}/channels` | `{type, name, topic?, parent_id?, user_limit?, bitrate?}` | 201, канал | `MANAGE_CHANNELS` |
+| `PATCH /channels/{id}` | `{name?, topic?, parent_id?, position?, user_limit?, bitrate?}` | 200, канал | `MANAGE_CHANNELS` в канале |
+| `DELETE /channels/{id}` | — | 204 | `MANAGE_CHANNELS` в канале |
+| `PUT /channels/{id}/permissions/{target_id}` | `{type: 1 роль / 2 участник, allow?, deny?}` | 200, канал | `MANAGE_ROLES` в канале, только свои биты |
+| `DELETE /channels/{id}/permissions/{target_id}` | — | 204 | то же |
+| `GET /guilds/{id}/roles` | — | 200, роли по возрастанию позиции | участник |
+| `POST /guilds/{id}/roles` | `{name, permissions?, color?}` | 201, роль на позиции 1 | `MANAGE_ROLES`, только свои биты |
+| `PATCH /guilds/{id}/roles/{role_id}` | `{name?, permissions?, color?, position?}` | 200, роль | роль ниже вашей высшей до и после изменения |
+| `DELETE /guilds/{id}/roles/{role_id}` | — | 204 | роль ниже вашей высшей |
+| `GET /guilds/{id}/members?after=&limit=` | — | 200, участники по `user_id`, до 1000 | участник |
+| `PATCH /guilds/{id}/members/@me` | `{nick}` (`null` или `""` сбрасывает) | 204 | `CHANGE_NICKNAME` |
+| `DELETE /guilds/{id}/members/@me` | — | 204, выход с сервера | владелец не может выйти (400 `owner_cannot_leave`) |
+| `DELETE /guilds/{id}/members/{user_id}` | — | 204, кик | `KICK_MEMBERS` и ваша высшая роль выше |
+| `PUT /guilds/{id}/members/{user_id}/roles/{role_id}` | — | 204 | можете выдать роль и выше участника (или это вы) |
+| `DELETE /guilds/{id}/members/{user_id}/roles/{role_id}` | — | 204 | то же |
+
+Полный сервер: `{id, name, owner_id, created_at, roles, channels, member, permissions}`,
+где `channels` только видимые вам, `member` ваше участие, `permissions` ваши
+права на уровне сервера (без переопределений каналов).
+
+Канал: `{id, guild_id, type, name, topic?, parent_id?, position, user_limit?, bitrate?, permission_overwrites}`.
+Типы: 0 текст, 2 голос, 4 категория. `user_limit` (0–99) и `bitrate` (8000–384000,
+по умолчанию 64000) только у голосовых. Категории не вкладываются.
+
+Роль: `{id, guild_id, name, position, permissions, color}`. У @everyone id сервера
+и позиция 0, его нельзя удалить, переименовать, переместить или выдать.
+
+Участник: `{guild_id, user_id, nick, roles, joined_at, user: {id, username, display_name}}`.
+
+События (уходят через gateway с шага 5): `GUILD_CREATE`, `GUILD_UPDATE`,
+`GUILD_DELETE`, `CHANNEL_CREATE/UPDATE/DELETE`, `GUILD_ROLE_CREATE/UPDATE/DELETE`
+(с полным списком ролей, потому что позиции сдвигаются), `GUILD_MEMBER_ADD/UPDATE/REMOVE`.
+Изменение переопределений прав приходит как `CHANNEL_UPDATE`.

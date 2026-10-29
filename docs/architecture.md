@@ -65,6 +65,12 @@ attachments, read_states, relationships, invites, calls, outbox
 
 Индекс `messages (channel_id, id DESC)`, курсорная пагинация before/after.
 
+Готово на шаге 4a: `guilds`, `roles`, `members`, `member_roles`, `channels`,
+`permission_overwrites`, `outbox`. Записи в сервер сериализуются блокировкой
+строки `guilds` и проверяют права в той же транзакции (ADR-0012). Модуль
+`internal/guild` загружает входные данные для `internal/perm`, пользователей
+получает через интерфейс `UserDirectory` из `internal/auth`.
+
 ## Права
 
 Пакет `internal/perm` (ADR-0011), чистые функции без БД:
