@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -62,10 +63,10 @@ func (t *Tickets) Consume(ctx context.Context, ticket string) (Principal, error)
 		return Principal{}, ErrInvalidTicket
 	}
 	var p Principal
-	if p.UserID, err = parseUUID(m["uid"]); err != nil {
+	if p.UserID, err = uuid.Parse(m["uid"]); err != nil {
 		return Principal{}, ErrInvalidTicket
 	}
-	if p.SessionID, err = parseUUID(m["sid"]); err != nil {
+	if p.SessionID, err = uuid.Parse(m["sid"]); err != nil {
 		return Principal{}, ErrInvalidTicket
 	}
 	return p, nil

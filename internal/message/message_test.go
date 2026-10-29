@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -85,7 +86,12 @@ func TestGuildMessages(t *testing.T) {
 	eve.Expect(http.StatusNotFound, "POST", msgs(text), map[string]any{"content": "x"})
 	eve.Expect(http.StatusNotFound, "GET", msgs(text), nil)
 	eve.Expect(http.StatusNotFound, "GET", msgs(uuid.NewString()), nil)
-	bob.Expect(http.StatusBadRequest, "POST", msgs(voice), map[string]any{"content": "x"})
+	for method, req := range map[string]any{"POST": map[string]any{"content": "x"}, "GET": nil} {
+		body := obj(bob.Expect(http.StatusBadRequest, method, msgs(voice), req))
+		if body["code"] != "not_text_channel" || !strings.Contains(str(body["message"]), "читать") {
+			t.Fatalf("%s voice: %v", method, body)
+		}
+	}
 
 	// Nonce: the retry returns the first message with 200.
 	first := obj(bob.Expect(http.StatusCreated, "POST", msgs(text), map[string]any{"content": "раз", "nonce": "n-1"}))

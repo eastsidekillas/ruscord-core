@@ -9,6 +9,11 @@
 
 `code` стабилен и предназначен для клиента, `message` для человека.
 
+Тело запроса не больше 1 МиБ, иначе 413 `body_too_large`. Битый JSON, пустое
+тело, неверный тип поля или неизвестное поле: 400 `invalid_request`, в
+`message` названо поле. Неверный `limit` или id в query-параметрах: 400
+`invalid_request`.
+
 ## Аутентификация
 
 Токены живут только в cookie, JavaScript их не видит.
@@ -64,7 +69,7 @@ username; email уникален без учёта регистра.
 | `POST /guilds/{id}/channels` | `{type, name, topic?, parent_id?, user_limit?, bitrate?}` | 201, канал | `MANAGE_CHANNELS` |
 | `PATCH /channels/{id}` | `{name?, topic?, parent_id?, position?, user_limit?, bitrate?}` | 200, канал | `MANAGE_CHANNELS` в канале |
 | `DELETE /channels/{id}` | — | 204 | `MANAGE_CHANNELS` в канале |
-| `PUT /channels/{id}/permissions/{target_id}` | `{type: 1 роль / 2 участник, allow?, deny?}` | 200, канал | `MANAGE_ROLES` в канале, только свои биты |
+| `PUT /channels/{id}/permissions/{target_id}` | `{type: 1 роль / 2 участник, allow?, deny?}` | 200, канал | `MANAGE_ROLES` в канале, только свои биты; `ADMINISTRATOR` в канале нельзя (422) |
 | `DELETE /channels/{id}/permissions/{target_id}` | — | 204 | то же |
 | `GET /guilds/{id}/roles` | — | 200, роли по возрастанию позиции | участник |
 | `POST /guilds/{id}/roles` | `{name, permissions?, color?}` | 201, роль на позиции 1 | `MANAGE_ROLES`, только свои биты |
@@ -78,7 +83,7 @@ username; email уникален без учёта регистра.
 | `DELETE /guilds/{id}/members/{user_id}/roles/{role_id}` | — | 204 | то же |
 
 Полный сервер: `{id, name, owner_id, created_at, roles, channels, member, permissions}`,
-где `channels` только видимые вам, `member` ваше участие, `permissions` ваши
+где `channels` только видимые вам, `member` ваше участие (с `user`), `permissions` ваши
 права на уровне сервера (без переопределений каналов).
 
 Канал: `{id, guild_id, type, name, topic?, parent_id?, position, user_limit?, bitrate?, permission_overwrites}`.
@@ -94,7 +99,9 @@ username; email уникален без учёта регистра.
 События (уходят через gateway с шага 5): `GUILD_CREATE`, `GUILD_UPDATE`,
 `GUILD_DELETE`, `CHANNEL_CREATE/UPDATE/DELETE`, `GUILD_ROLE_CREATE/UPDATE/DELETE`
 (с полным списком ролей, потому что позиции сдвигаются), `GUILD_MEMBER_ADD/UPDATE/REMOVE`.
-Изменение переопределений прав приходит как `CHANNEL_UPDATE`.
+Изменение переопределений прав приходит как `CHANNEL_UPDATE`. Удаление роли
+и уход или кик участника удаляют их переопределения, и каждый затронутый
+канал тоже приходит как `CHANNEL_UPDATE`.
 
 Лимиты частоты на пользователя: создание сервера 10/час, канала 30/мин, роли
 30/мин, приглашения 20/мин. Ответ 429 `rate_limited`.
@@ -195,6 +202,9 @@ nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
   личка, чужой сервер: 404. В личке с блокировкой писать нельзя (403), читать можно.
 - Лимит: 10 сообщений за 10 секунд на пользователя.
 - Сообщения удаляются вместе с каналом, сервером или группой.
+- Порядок: id сообщения (UUIDv7) задаёт порядок в канале. События от разных
+  отправителей могут прийти в другом порядке, поэтому клиент вставляет
+  сообщение по id, а не в конец списка.
 
 События: `MESSAGE_CREATE`, `MESSAGE_UPDATE`, `MESSAGE_DELETE {id, channel_id, guild_id?}`
 в топик сервера или `channel.<id>` для личек.

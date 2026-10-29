@@ -130,12 +130,13 @@ type CreateInviteInput struct {
 // CreateInvite needs CREATE_INVITE in the channel the invite points to.
 func (s *Service) CreateInvite(ctx context.Context, userID, channelID uuid.UUID, in CreateInviteInput) (Invite, error) {
 	age := defaultInviteAge
-	if in.MaxAge != nil {
-		age = time.Duration(*in.MaxAge) * time.Second
-	}
 	fields := httpx.Fields{}
-	if age < 0 || age > maxInviteAge {
-		fields["max_age"] = "От 0 (бессрочно) до 604800 секунд"
+	if in.MaxAge != nil {
+		// Check the number before multiplying: a huge value would overflow.
+		if *in.MaxAge < 0 || *in.MaxAge > int(maxInviteAge/time.Second) {
+			fields["max_age"] = "От 0 (бессрочно) до 604800 секунд"
+		}
+		age = time.Duration(*in.MaxAge) * time.Second
 	}
 	if in.MaxUses < 0 || in.MaxUses > 100 {
 		fields["max_uses"] = "От 0 (без ограничений) до 100"

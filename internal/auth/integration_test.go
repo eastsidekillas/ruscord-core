@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +69,7 @@ type client struct {
 	base    string
 	access  string
 	refresh string
+	ua      string
 }
 
 func (e *env) client(t *testing.T) *client { return &client{t: t, base: e.srv.URL} }
@@ -85,6 +87,9 @@ func (c *client) do(method, path string, body any) (result, map[string]any) {
 	}
 	req, _ := http.NewRequestWithContext(c.t.Context(), method, c.base+path, r)
 	req.Header.Set("Content-Type", "application/json")
+	if c.ua != "" {
+		req.Header.Set("User-Agent", c.ua)
+	}
 	if c.access != "" {
 		req.AddCookie(&http.Cookie{Name: accessCookie, Value: c.access}) //nolint:gosec // request cookie in a test client
 	}
@@ -358,5 +363,29 @@ func TestRejectsUnknownFields(t *testing.T) {
 	})
 	if resp.StatusCode != 400 {
 		t.Fatalf("unknown field: %d %v", resp.StatusCode, body)
+	}
+}
+
+// The User-Agent is stored as the session device; odd headers must not turn
+// into a 500 from Postgres.
+func TestOddUserAgents(t *testing.T) {
+	e := newEnv(t)
+	for i, ua := range []string{"bad \xff\xfe utf-8", strings.Repeat("я", 300)} {
+		c := e.client(t)
+		c.ua = ua
+		register(t, c, "ua"+strconv.Itoa(i))
+	}
+	var n int
+	if err := e.pg.QueryRow(t.Context(), `SELECT max(char_length(device)) FROM sessions`).Scan(&n); err != nil || n != maxDevice {
+		t.Fatalf("longest device = %d (%v), want %d", n, err, maxDevice)
+	}
+}
+
+func TestLoginOverlongEmail(t *testing.T) {
+	e := newEnv(t)
+	resp, body := e.client(t).do("POST", "/api/v1/auth/login",
+		map[string]string{"email": strings.Repeat("a", 300) + "@example.com", "password": "s3cret-pass"})
+	if resp.StatusCode != http.StatusUnauthorized || body["code"] != "invalid_credentials" {
+		t.Fatalf("overlong email: %d %v", resp.StatusCode, body)
 	}
 }

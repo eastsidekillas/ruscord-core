@@ -63,6 +63,9 @@ func TestGuildLifecycle(t *testing.T) {
 	if full["permissions"] != permStr(perm.All) {
 		t.Fatalf("owner permissions = %v", full["permissions"])
 	}
+	if me := obj(obj(full["member"])["user"]); me["username"] != "owner" {
+		t.Fatalf("member.user = %v", me)
+	}
 	if roles := list(full["roles"]); len(roles) != 1 || str(obj(roles[0])["id"]) != gid {
 		t.Fatalf("roles = %v, want only @everyone with the guild id", roles)
 	}
@@ -85,6 +88,8 @@ func TestGuildLifecycle(t *testing.T) {
 		}
 		eve.Expect(http.StatusNotFound, c.method, c.path, body)
 	}
+	// Even a request that changes nothing does not reveal the guild.
+	eve.Expect(http.StatusNotFound, "PATCH", g+"/members/@me", map[string]any{})
 
 	e.join(gid, bob)
 	full = obj(bob.Expect(http.StatusOK, "GET", g, nil))
@@ -185,7 +190,6 @@ func TestOverwriteCannotEscalate(t *testing.T) {
 	ow := "/api/v1/channels/" + text + "/permissions/"
 	// The mod may not grant what they lack, not even to themself.
 	mod.Expect(http.StatusForbidden, "PUT", ow+mod.ID.String(), map[string]any{"type": 2, "allow": permStr(perm.ManageChannels)})
-	mod.Expect(http.StatusForbidden, "PUT", ow+gid, map[string]any{"type": 1, "deny": permStr(perm.Administrator)})
 	mod.Expect(http.StatusOK, "PUT", ow+gid, map[string]any{"type": 1, "deny": permStr(perm.SendMessages)})
 
 	// An overwrite set by the owner with bits the mod lacks cannot be removed by the mod.
@@ -201,6 +205,9 @@ func TestOverwriteCannotEscalate(t *testing.T) {
 	mod.Expect(http.StatusUnprocessableEntity, "PUT", ow+gid,
 		map[string]any{"type": 1, "allow": permStr(perm.SendMessages), "deny": permStr(perm.SendMessages)})
 	mod.Expect(http.StatusUnprocessableEntity, "PUT", ow+gid, map[string]any{"type": 1, "allow": permStr(1 << 40)})
+	// ADMINISTRATOR is guild-wide; not even the owner can put it in a channel.
+	owner.Expect(http.StatusUnprocessableEntity, "PUT", ow+gid, map[string]any{"type": 1, "deny": permStr(perm.Administrator)})
+	owner.Expect(http.StatusUnprocessableEntity, "PUT", ow+gid, map[string]any{"type": 1, "allow": permStr(perm.Administrator)})
 	mod.Expect(http.StatusBadRequest, "PUT", ow+gid, map[string]any{"type": 1, "allow": 1})
 }
 
@@ -296,6 +303,8 @@ func TestValidationAndNoEventsOnFailure(t *testing.T) {
 	owner.Expect(http.StatusUnprocessableEntity, "POST", g+"/channels", map[string]any{"type": 0, "name": "t", "bitrate": 96000})
 	owner.Expect(http.StatusUnprocessableEntity, "POST", g+"/channels", map[string]any{"type": 2, "name": "v", "user_limit": 100})
 	owner.Expect(http.StatusUnprocessableEntity, "POST", g+"/channels", map[string]any{"type": 0, "name": "t", "parent_id": text})
+	owner.Expect(http.StatusUnprocessableEntity, "POST", g+"/channels", map[string]any{"type": 0, "name": "t", "topic": "a\x00b"})
+	owner.Expect(http.StatusUnprocessableEntity, "PATCH", "/api/v1/channels/"+text, map[string]any{"topic": "a\x00b"})
 	owner.Expect(http.StatusUnprocessableEntity, "POST", g+"/roles", map[string]any{"permissions": "0"})
 	owner.Expect(http.StatusUnprocessableEntity, "PATCH", g+"/members/@me", map[string]any{"nick": strings.Repeat("я", 33)})
 	owner.Expect(http.StatusNotFound, "GET", "/api/v1/guilds/not-a-uuid", nil)
@@ -313,6 +322,50 @@ func TestValidationAndNoEventsOnFailure(t *testing.T) {
 	}
 	if got := e.OutboxTypes(); got[len(got)-1] != "CHANNEL_CREATE" {
 		t.Fatalf("last event = %v", got[len(got)-1])
+	}
+}
+
+// Overwrites of a deleted role or a removed member are deleted with them,
+// and clients hear that the channel changed.
+func TestOverwritesGoWithRoleAndMember(t *testing.T) {
+	e := newEnv(t)
+	owner, bob := e.User("owner"), e.User("bob")
+	gid, text, _ := createGuild(owner)
+	e.join(gid, bob)
+	g := "/api/v1/guilds/" + gid
+	ow := "/api/v1/channels/" + text + "/permissions/"
+	role := str(obj(owner.Expect(http.StatusCreated, "POST", g+"/roles", map[string]any{"name": "r"}))["id"])
+	owner.Expect(http.StatusOK, "PUT", ow+role, map[string]any{"type": 1, "deny": permStr(perm.SendMessages)})
+	owner.Expect(http.StatusOK, "PUT", ow+bob.ID.String(), map[string]any{"type": 2, "deny": permStr(perm.SendMessages)})
+	overwrites := func() []any {
+		for _, c := range list(owner.Expect(http.StatusOK, "GET", g+"/channels", nil)) {
+			if obj(c)["id"] == text {
+				return list(obj(c)["permission_overwrites"])
+			}
+		}
+		t.Fatal("text channel is gone")
+		return nil
+	}
+	lastEvent := func() string { got := e.OutboxTypes(); return got[len(got)-1] }
+
+	owner.Expect(http.StatusNoContent, "DELETE", g+"/roles/"+role, nil)
+	if ows := overwrites(); len(ows) != 1 || obj(ows[0])["id"] != bob.ID.String() {
+		t.Fatalf("after role delete: %v", ows)
+	}
+	if ev := lastEvent(); ev != "GUILD_ROLE_DELETE" {
+		t.Fatalf("last event = %s", ev)
+	}
+	types := e.OutboxTypes()
+	if types[len(types)-2] != "CHANNEL_UPDATE" {
+		t.Fatalf("role delete events = %v", types)
+	}
+
+	owner.Expect(http.StatusNoContent, "DELETE", g+"/members/"+bob.ID.String(), nil)
+	if ows := overwrites(); len(ows) != 0 {
+		t.Fatalf("after kick: %v", ows)
+	}
+	if !strings.Contains(strings.Join(e.OutboxTypes()[len(types):], ","), "CHANNEL_UPDATE") {
+		t.Fatalf("kick events = %v", e.OutboxTypes()[len(types):])
 	}
 }
 

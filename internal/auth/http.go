@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
@@ -36,10 +37,16 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/gateway/ticket", h.RequireAuth(httpx.Handle(h.ticket)))
 }
 
+// maxDevice matches the sessions.device CHECK (characters, not bytes).
+const maxDevice = 128
+
+// clientInfo describes the device from the User-Agent. Headers are raw bytes:
+// invalid UTF-8 or NUL would make Postgres reject the session row, so they
+// are dropped, and the length is cut by characters, never mid-character.
 func clientInfo(r *http.Request) ClientInfo {
-	ua := r.UserAgent()
-	if len(ua) > 128 {
-		ua = ua[:128]
+	ua := strings.ReplaceAll(strings.ToValidUTF8(r.UserAgent(), ""), "\x00", "")
+	if runes := []rune(ua); len(runes) > maxDevice {
+		ua = string(runes[:maxDevice])
 	}
 	return ClientInfo{IP: httpx.ClientIP(r), Device: ua}
 }
