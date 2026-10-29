@@ -55,6 +55,7 @@ func TestInvites(t *testing.T) {
 	bob.expect(http.StatusForbidden, "POST", "/api/v1/channels/"+text+"/invites", map[string]any{})
 	owner.expect(http.StatusOK, "PUT", "/api/v1/channels/"+text+"/permissions/"+gid, map[string]any{"type": 1, "deny": permStr(1 << 0)})
 	bob.expect(http.StatusNotFound, "POST", "/api/v1/channels/"+text+"/invites", map[string]any{})
+	owner.expect(http.StatusNoContent, "DELETE", "/api/v1/channels/"+text+"/permissions/"+gid, nil)
 
 	// Validation and malformed codes.
 	owner.expect(http.StatusUnprocessableEntity, "POST", "/api/v1/channels/"+text+"/invites", map[string]any{"max_age": 604801})
@@ -68,6 +69,31 @@ func TestInvites(t *testing.T) {
 	e.svc.now = func() time.Time { return time.Now().Add(2 * time.Minute) }
 	dave.expect(http.StatusNotFound, "GET", "/api/v1/invites/"+soon, nil)
 	dave.expect(http.StatusNotFound, "POST", "/api/v1/invites/"+soon, nil)
+}
+
+// An invite made while the channel was public stops working once the channel
+// is hidden from @everyone, and the preview no longer reveals it.
+func TestInviteToChannelHiddenLater(t *testing.T) {
+	e := newEnv(t)
+	owner, eve := e.user("owner"), e.user("eve")
+	gid, text, _ := createGuild(owner)
+	code := str(obj(owner.expect(http.StatusCreated, "POST", "/api/v1/channels/"+text+"/invites", map[string]any{}))["code"])
+	eve.expect(http.StatusOK, "GET", "/api/v1/invites/"+code, nil)
+
+	ow := "/api/v1/channels/" + text + "/permissions/" + gid
+	owner.expect(http.StatusOK, "PUT", ow, map[string]any{"type": 1, "deny": permStr(1 << 0)})
+	if body := eve.expect(http.StatusNotFound, "GET", "/api/v1/invites/"+code, nil); strings.Contains(str(obj(body)["message"]), "general") {
+		t.Fatalf("404 leaks the channel: %v", body)
+	}
+	eve.expect(http.StatusNotFound, "POST", "/api/v1/invites/"+code, nil)
+	eve.expect(http.StatusNotFound, "GET", "/api/v1/guilds/"+gid, nil)
+
+	// The owner still sees the guild via the invite, being a member already.
+	owner.expect(http.StatusOK, "POST", "/api/v1/invites/"+code, nil)
+
+	// Opening the channel again revives the invite.
+	owner.expect(http.StatusNoContent, "DELETE", ow, nil)
+	eve.expect(http.StatusOK, "POST", "/api/v1/invites/"+code, nil)
 }
 
 func TestInviteLookupsAreRateLimited(t *testing.T) {

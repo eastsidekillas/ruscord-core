@@ -95,6 +95,24 @@ func getInvite(ctx context.Context, q querier, code string, lock bool) (Invite, 
 	return scanInvite(q.QueryRow(ctx, sql, code))
 }
 
+// checkVisible reports ErrNotFound unless userID, joining with @everyone
+// only, could view the invite's channel. An invite to a channel that was
+// hidden after the invite was made must not reveal the channel or let anyone in.
+func checkVisible(ctx context.Context, q querier, inv Invite, userID uuid.UUID) (Guild, Channel, error) {
+	ch, err := getChannel(ctx, q, inv.ChannelID)
+	if err != nil {
+		return Guild{}, Channel{}, notFound(err)
+	}
+	a, err := newcomerAccess(ctx, q, inv.GuildID, userID)
+	if err != nil {
+		return Guild{}, Channel{}, notFound(err)
+	}
+	if !a.in(ch).Has(perm.ViewChannel) {
+		return Guild{}, Channel{}, ErrNotFound
+	}
+	return a.guild, ch, nil
+}
+
 func (inv Invite) usable(now time.Time) bool {
 	if inv.ExpiresAt != nil && !now.Before(*inv.ExpiresAt) {
 		return false
@@ -182,13 +200,9 @@ func (s *Service) PreviewInvite(ctx context.Context, userID uuid.UUID, code stri
 	if !inv.usable(s.now()) {
 		return InvitePreview{}, ErrNotFound
 	}
-	g, err := getGuild(ctx, s.pg, inv.GuildID)
+	g, ch, err := checkVisible(ctx, s.pg, inv, userID)
 	if err != nil {
-		return InvitePreview{}, notFound(err)
-	}
-	ch, err := getChannel(ctx, s.pg, inv.ChannelID)
-	if err != nil {
-		return InvitePreview{}, notFound(err)
+		return InvitePreview{}, err
 	}
 	var count int
 	if err := s.pg.QueryRow(ctx, `SELECT count(*) FROM members WHERE guild_id = $1`, g.ID).Scan(&count); err != nil {
@@ -239,6 +253,9 @@ func (s *Service) AcceptInvite(ctx context.Context, userID uuid.UUID, code strin
 			full, err = s.full(ctx, tx, inv.GuildID, userID)
 			return err
 		} else if !errors.Is(err, errNotFound) {
+			return err
+		}
+		if _, _, err := checkVisible(ctx, tx, inv, userID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE invites SET uses = uses + 1 WHERE code = $1`, code); err != nil {

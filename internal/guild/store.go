@@ -176,11 +176,23 @@ type access struct {
 // is not a member: callers answer 404 in both cases, so membership of a
 // guild cannot be probed.
 func loadAccess(ctx context.Context, q querier, guildID, userID uuid.UUID) (access, error) {
-	g, err := getGuild(ctx, q, guildID)
+	m, err := getMember(ctx, q, guildID, userID)
 	if err != nil {
 		return access{}, err
 	}
-	m, err := getMember(ctx, q, guildID, userID)
+	a, err := loadGuildAccess(ctx, q, guildID, userID, m.RoleIDs)
+	a.full = m
+	return a, err
+}
+
+// newcomerAccess is what userID would get right after joining: @everyone
+// only, no roles yet. Invites use it to check the channel they lead to.
+func newcomerAccess(ctx context.Context, q querier, guildID, userID uuid.UUID) (access, error) {
+	return loadGuildAccess(ctx, q, guildID, userID, nil)
+}
+
+func loadGuildAccess(ctx context.Context, q querier, guildID, userID uuid.UUID, roleIDs []uuid.UUID) (access, error) {
+	g, err := getGuild(ctx, q, guildID)
 	if err != nil {
 		return access{}, err
 	}
@@ -192,7 +204,7 @@ func loadAccess(ctx context.Context, q querier, guildID, userID uuid.UUID) (acce
 	for _, r := range roles {
 		pg.Roles[r.ID] = perm.Role{ID: r.ID, Position: r.Position, Permissions: r.Permissions}
 	}
-	return access{guild: g, roles: roles, pg: pg, member: perm.Member{UserID: userID, RoleIDs: m.RoleIDs}, full: m}, nil
+	return access{guild: g, roles: roles, pg: pg, member: perm.Member{UserID: userID, RoleIDs: roleIDs}}, nil
 }
 
 func (a access) base() perm.Permissions { return perm.Base(a.pg, a.member) }
