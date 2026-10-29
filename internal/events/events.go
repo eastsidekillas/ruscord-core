@@ -34,6 +34,10 @@ const (
 	RelationshipRemove = "RELATIONSHIP_REMOVE"
 	RecipientAdd       = "CHANNEL_RECIPIENT_ADD"
 	RecipientRemove    = "CHANNEL_RECIPIENT_REMOVE"
+
+	MessageCreate = "MESSAGE_CREATE"
+	MessageUpdate = "MESSAGE_UPDATE"
+	MessageDelete = "MESSAGE_DELETE"
 )
 
 // Topics. Gateway nodes subscribe to the guilds and users of their sessions.

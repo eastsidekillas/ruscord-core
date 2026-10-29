@@ -82,12 +82,16 @@ jobs:
           user1=$(curl -fsS -b jar $api/users/@me | jq -r .id)
           curl -fsS -b jar2 -X PUT -H "$json" -d '{}' $api/users/@me/relationships/$user1
           curl -fsS -b jar2 $api/users/@me/relationships | jq -e '.[0].type == 1' >/dev/null
-          curl -fsS -b jar2 -H "$json" -d "{\"recipient_id\":\"$user1\"}" $api/users/@me/channels | jq -e '.type == 1' >/dev/null
+          dm=$(curl -fsS -b jar2 -H "$json" -d "{\"recipient_id\":\"$user1\"}" $api/users/@me/channels | jq -r .id)
+          curl -fsS -b jar2 -H "$json" -d '{"content":"привет","nonce":"ci-1"}' $api/channels/$dm/messages >/dev/null
+          curl -fsS -b jar $api/channels/$dm/messages | jq -e '.[0].content == "привет"' >/dev/null
+          curl -fsS -b jar -H "$json" -d '{"content":"в канале"}' $api/channels/$channel/messages >/dev/null
+          curl -fsS -b jar2 $api/channels/$channel/messages | jq -e 'length == 1' >/dev/null
       - name: outbox events reach JetStream
         run: |
           for i in $(seq 1 10); do
             msgs=$(curl -fsS 'http://127.0.0.1:8222/jsz?streams=true' | jq '[.account_details[].stream_detail[] | select(.name=="EVENTS") | .state.messages] | add // 0')
-            if [ "$msgs" -ge 8 ]; then echo "EVENTS has $msgs messages"; exit 0; fi
+            if [ "$msgs" -ge 10 ]; then echo "EVENTS has $msgs messages"; exit 0; fi
             sleep 1
           done
           echo "EVENTS stream has ${msgs:-0} messages"; exit 1

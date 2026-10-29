@@ -15,6 +15,7 @@ import (
 
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/events"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/hooks"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/slicex"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
@@ -59,7 +60,12 @@ type Service struct {
 	users   Users
 	guilds  Guilds
 	limiter *ratelimit.Limiter
+
+	channelsDeleted hooks.ChannelsDeleted
 }
+
+// OnChannelsDeleted registers the hook run when a group DM is deleted.
+func (s *Service) OnChannelsDeleted(h hooks.ChannelsDeleted) { s.channelsDeleted = h }
 
 func NewService(pg *pgxpool.Pool, users Users, guilds Guilds, limiter *ratelimit.Limiter) *Service {
 	return &Service{pg: pg, users: users, guilds: guilds, limiter: limiter}

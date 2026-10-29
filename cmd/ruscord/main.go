@@ -25,6 +25,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/health"
+	"github.com/eastsidekillas/ruscord-core/internal/message"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/logx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/store"
@@ -118,7 +119,11 @@ func run() error {
 		authHTTP.Register(mux)
 		guilds := guild.NewService(clients.PG, svc, limiter)
 		guild.NewHandler(guilds, authHTTP.RequireAuth).Register(mux)
-		social.NewHandler(social.NewService(clients.PG, svc, guilds, limiter), authHTTP.RequireAuth).Register(mux)
+		socials := social.NewService(clients.PG, svc, guilds, limiter)
+		social.NewHandler(socials, authHTTP.RequireAuth).Register(mux)
+		guilds.OnChannelsDeleted(message.DeleteChannels)
+		socials.OnChannelsDeleted(message.DeleteChannels)
+		message.NewHandler(message.NewService(clients.PG, svc, guilds, socials, limiter), authHTTP.RequireAuth).Register(mux)
 
 		relay, err := events.NewRelay(clients.PG, clients.NATS, log)
 		if err != nil {

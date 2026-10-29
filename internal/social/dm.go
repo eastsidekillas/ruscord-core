@@ -30,6 +30,7 @@ const maxGroupSize = 10 // including the owner
 var (
 	// errCannotDM does not say which rule failed, so blocks stay invisible.
 	errCannotDM     = httpx.NewError(http.StatusForbidden, "cannot_dm", "Нельзя написать этому пользователю")
+	errSelfDM       = httpx.NewError(http.StatusBadRequest, "self", "Нельзя написать самому себе")
 	errNotFriends   = httpx.NewError(http.StatusBadRequest, "not_friends", "В группу можно добавить только друзей")
 	errGroupFull    = httpx.NewError(http.StatusBadRequest, "group_full", "В группе не больше 10 участников")
 	errNotGroup     = httpx.NewError(http.StatusBadRequest, "not_group", "Это действие доступно только в групповом чате")
@@ -137,7 +138,7 @@ func (s *Service) dmEvent(ctx context.Context, tx pgx.Tx, id uuid.UUID, typ stri
 // either user blocked the other.
 func (s *Service) OpenDM(ctx context.Context, me, other uuid.UUID) (DM, error) {
 	if me == other {
-		return DM{}, errCannotDM
+		return DM{}, errSelfDM
 	}
 	blocked, err := s.Blocked(ctx, me, other)
 	if err != nil {
@@ -365,6 +366,9 @@ func (s *Service) RemoveRecipient(ctx context.Context, me, id, user uuid.UUID) e
 			return err
 		}
 		if len(d.recipientIDs) == 1 {
+			if err := s.channelsDeleted.Run(ctx, tx, []uuid.UUID{id}); err != nil {
+				return err
+			}
 			if _, err := tx.Exec(ctx, `DELETE FROM dm_channels WHERE id = $1`, id); err != nil {
 				return err
 			}

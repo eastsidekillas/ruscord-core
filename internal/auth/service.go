@@ -111,7 +111,7 @@ func (in *RegisterInput) normalize() *httpx.Error {
 		in.DisplayName = in.Username
 	}
 
-	fields := map[string]string{}
+	fields := httpx.Fields{}
 	if addr, err := mail.ParseAddress(in.Email); err != nil || addr.Address != in.Email || len(in.Email) > 254 {
 		fields["email"] = "Некорректный email"
 	}
@@ -121,9 +121,7 @@ func (in *RegisterInput) normalize() *httpx.Error {
 	case strings.Contains(in.Username, ".."):
 		fields["username"] = "Нельзя две точки подряд"
 	}
-	if n := utf8.RuneCountInString(in.DisplayName); n < 1 || n > 32 {
-		fields["display_name"] = "От 1 до 32 символов"
-	}
+	fields.Length("display_name", in.DisplayName, 1, 32)
 	switch n := utf8.RuneCountInString(in.Password); {
 	case n < 8:
 		fields["password"] = "Не короче 8 символов"
