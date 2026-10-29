@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -18,6 +19,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
+	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
 
 var (
@@ -29,7 +31,18 @@ var (
 	errTooManyChans   = httpx.NewError(http.StatusBadRequest, "too_many_channels", "Достигнут лимит каналов на сервере")
 	errTooManyRoles   = httpx.NewError(http.StatusBadRequest, "too_many_roles", "Достигнут лимит ролей на сервере")
 	errAlreadyMember  = httpx.NewError(http.StatusConflict, "already_member", "Пользователь уже на сервере")
-	errEveryoneLocked = httpx.NewError(http.StatusBadRequest, "everyone_role", "Роль @everyone нельзя удалить или выдать")
+	errEveryoneEdit   = httpx.NewError(http.StatusBadRequest, "everyone_role", "Роль @everyone нельзя переименовать или переместить, можно менять только её права")
+	errEveryoneDelete = httpx.NewError(http.StatusBadRequest, "everyone_role", "Роль @everyone нельзя удалить")
+	errEveryoneAssign = httpx.NewError(http.StatusBadRequest, "everyone_role", "Роль @everyone есть у всех участников, её нельзя выдать или снять")
+)
+
+var (
+	ruleGuildCreate   = ratelimit.Rule{Name: "guild_create", Limit: 10, Window: time.Hour}
+	ruleChannelCreate = ratelimit.Rule{Name: "channel_create", Limit: 30, Window: time.Minute}
+	ruleRoleCreate    = ratelimit.Rule{Name: "role_create", Limit: 30, Window: time.Minute}
+	ruleInviteCreate  = ratelimit.Rule{Name: "invite_create", Limit: 20, Window: time.Minute}
+	// Lookups and joins by code are limited per user so codes cannot be enumerated.
+	ruleInviteUse = ratelimit.Rule{Name: "invite_use", Limit: 30, Window: time.Minute}
 )
 
 // UserDirectory resolves public profiles; auth.Service implements it.
@@ -38,12 +51,14 @@ type UserDirectory interface {
 }
 
 type Service struct {
-	pg    *pgxpool.Pool
-	users UserDirectory
+	pg      *pgxpool.Pool
+	users   UserDirectory
+	limiter *ratelimit.Limiter
+	now     func() time.Time
 }
 
-func NewService(pg *pgxpool.Pool, users UserDirectory) *Service {
-	return &Service{pg: pg, users: users}
+func NewService(pg *pgxpool.Pool, users UserDirectory, limiter *ratelimit.Limiter) *Service {
+	return &Service{pg: pg, users: users, limiter: limiter, now: time.Now}
 }
 
 func (s *Service) tx(ctx context.Context, fn func(pgx.Tx) error) error {
@@ -77,9 +92,7 @@ func validation(fields map[string]string) error {
 	if len(fields) == 0 {
 		return nil
 	}
-	e := httpx.NewError(http.StatusUnprocessableEntity, "validation_failed", "Проверьте поля формы")
-	e.Fields = fields
-	return e
+	return httpx.Validation(fields)
 }
 
 func checkName(fields map[string]string, key, v string, minLen, maxLen int) {
@@ -123,6 +136,9 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, in CreateGuildIn
 	fields := map[string]string{}
 	checkName(fields, "name", in.Name, 2, 100)
 	if err := validation(fields); err != nil {
+		return Full{}, err
+	}
+	if err := s.limiter.Check(ctx, ruleGuildCreate, userID.String()); err != nil {
 		return Full{}, err
 	}
 
@@ -309,6 +325,9 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 	}
 	if in.Bitrate == 0 {
 		in.Bitrate = 64000
+	}
+	if err := s.limiter.Check(ctx, ruleChannelCreate, userID.String()); err != nil {
+		return Channel{}, err
 	}
 
 	var ch Channel
@@ -610,6 +629,9 @@ func (s *Service) CreateRole(ctx context.Context, userID, guildID uuid.UUID, in 
 	if err := in.validate(true); err != nil {
 		return Role{}, err
 	}
+	if err := s.limiter.Check(ctx, ruleRoleCreate, userID.String()); err != nil {
+		return Role{}, err
+	}
 	r := Role{GuildID: guildID, Name: *in.Name, Position: 1}
 	if in.Permissions != nil {
 		r.Permissions = *in.Permissions
@@ -674,7 +696,7 @@ func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID uuid.U
 			// @everyone has no position to assign, so only MANAGE_ROLES and
 			// the no-escalation rule apply.
 			if in.Name != nil || in.Position != nil {
-				return errEveryoneLocked
+				return errEveryoneEdit
 			}
 			base := a.base()
 			if !base.Has(perm.ManageRoles) || (in.Permissions != nil && !base.Has(*in.Permissions)) {
@@ -740,7 +762,7 @@ func (s *Service) DeleteRole(ctx context.Context, userID, guildID, roleID uuid.U
 			return ErrNotFound
 		}
 		if r.ID == guildID {
-			return errEveryoneLocked
+			return errEveryoneDelete
 		}
 		if !perm.CanAssignRole(a.pg, a.member, perm.Role{ID: r.ID, Position: r.Position, Permissions: r.Permissions}) {
 			return httpx.ErrForbidden
@@ -765,47 +787,74 @@ func (s *Service) AddMember(ctx context.Context, guildID, userID uuid.UUID) (Ful
 		if err := lockGuild(ctx, tx, guildID); err != nil {
 			return notFound(err)
 		}
-		if err := checkGuildCount(ctx, tx, userID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO members (guild_id, user_id) VALUES ($1, $2)`, guildID, userID); err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				return errAlreadyMember
-			}
-			return err
-		}
-		m, err := getMember(ctx, tx, guildID, userID)
-		if err != nil {
-			return err
-		}
-		if err := s.attachUsers(ctx, []*Member{&m}); err != nil {
-			return err
-		}
-		full, err = s.full(ctx, tx, guildID, userID)
-		if err != nil {
-			return err
-		}
-		return events.Write(ctx, tx,
-			events.Event{Topic: events.GuildTopic(guildID), Type: events.MemberAdd, Data: m},
-			events.Event{Topic: events.UserTopic(userID), Type: events.GuildCreate, Data: full},
-		)
+		var err error
+		full, err = s.addMember(ctx, tx, guildID, userID)
+		return err
 	})
 	return full, err
 }
 
-func (s *Service) attachUsers(ctx context.Context, ms []*Member) error {
-	ids := make([]uuid.UUID, len(ms))
-	for i, m := range ms {
-		ids[i] = m.UserID
+// addMember inserts the member and writes the events. The caller holds the guild lock.
+func (s *Service) addMember(ctx context.Context, tx pgx.Tx, guildID, userID uuid.UUID) (Full, error) {
+	if err := checkGuildCount(ctx, tx, userID); err != nil {
+		return Full{}, err
 	}
-	users, err := s.users.Users(ctx, ids)
+	if _, err := tx.Exec(ctx, `INSERT INTO members (guild_id, user_id) VALUES ($1, $2)`, guildID, userID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return Full{}, errAlreadyMember
+		}
+		return Full{}, err
+	}
+	m, err := getMember(ctx, tx, guildID, userID)
+	if err != nil {
+		return Full{}, err
+	}
+	if err := s.attachUsers(ctx, []*Member{&m}); err != nil {
+		return Full{}, err
+	}
+	full, err := s.full(ctx, tx, guildID, userID)
+	if err != nil {
+		return Full{}, err
+	}
+	return full, events.Write(ctx, tx,
+		events.Event{Topic: events.GuildTopic(guildID), Type: events.MemberAdd, Data: m},
+		events.Event{Topic: events.UserTopic(userID), Type: events.GuildCreate, Data: full},
+	)
+}
+
+func (s *Service) attachUsers(ctx context.Context, ms []*Member) error {
+	return attachUsers(ctx, s.users, ms, func(m *Member) *uuid.UUID { return &m.UserID },
+		func(m *Member, u auth.PublicUser) { m.User = u })
+}
+
+// ptrs returns pointers to the elements of xs, for helpers that fill them in place.
+func ptrs[T any](xs []T) []*T {
+	out := make([]*T, len(xs))
+	for i := range xs {
+		out[i] = &xs[i]
+	}
+	return out
+}
+
+// attachUsers looks up the public profile behind each item's user id in one
+// query and stores it with set. Items without a user id are skipped.
+func attachUsers[T any](ctx context.Context, dir UserDirectory, items []*T, id func(*T) *uuid.UUID, set func(*T, auth.PublicUser)) error {
+	ids := make([]uuid.UUID, 0, len(items))
+	for _, it := range items {
+		if p := id(it); p != nil {
+			ids = append(ids, *p)
+		}
+	}
+	users, err := dir.Users(ctx, ids)
 	if err != nil {
 		return err
 	}
-	for _, m := range ms {
-		if u, ok := users[m.UserID]; ok {
-			m.User = u
+	for _, it := range items {
+		if p := id(it); p != nil {
+			if u, ok := users[*p]; ok {
+				set(it, u)
+			}
 		}
 	}
 	return nil
@@ -819,29 +868,11 @@ func (s *Service) ListMembers(ctx context.Context, userID, guildID, after uuid.U
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	rows, err := s.pg.Query(ctx,
-		`SELECT m.guild_id, m.user_id, m.nick, m.joined_at,
-		        COALESCE(array_agg(mr.role_id) FILTER (WHERE mr.role_id IS NOT NULL), '{}')
-		 FROM members m LEFT JOIN member_roles mr ON mr.guild_id = m.guild_id AND mr.user_id = m.user_id
-		 WHERE m.guild_id = $1 AND m.user_id > $2
-		 GROUP BY m.guild_id, m.user_id
-		 ORDER BY m.user_id LIMIT $3`, guildID, after, limit)
+	ms, err := listMembers(ctx, s.pg, guildID, after, limit)
 	if err != nil {
 		return nil, err
 	}
-	ms, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Member, error) {
-		var m Member
-		err := r.Scan(&m.GuildID, &m.UserID, &m.Nick, &m.JoinedAt, &m.RoleIDs)
-		return m, err
-	})
-	if err != nil {
-		return nil, err
-	}
-	ptrs := make([]*Member, len(ms))
-	for i := range ms {
-		ptrs[i] = &ms[i]
-	}
-	return ms, s.attachUsers(ctx, ptrs)
+	return ms, s.attachUsers(ctx, ptrs(ms))
 }
 
 // SetMemberRole adds (add=true) or removes a role. The caller must be able to
@@ -854,7 +885,7 @@ func (s *Service) SetMemberRole(ctx context.Context, userID, guildID, targetID, 
 			return ErrNotFound
 		}
 		if r.ID == guildID {
-			return errEveryoneLocked
+			return errEveryoneAssign
 		}
 		target, err := getMember(ctx, tx, guildID, targetID)
 		if err != nil {

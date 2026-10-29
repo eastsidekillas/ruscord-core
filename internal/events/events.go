@@ -27,6 +27,8 @@ const (
 	MemberAdd     = "GUILD_MEMBER_ADD"
 	MemberUpdate  = "GUILD_MEMBER_UPDATE"
 	MemberRemove  = "GUILD_MEMBER_REMOVE"
+	InviteCreate  = "INVITE_CREATE"
+	InviteDelete  = "INVITE_DELETE"
 )
 
 // Topics. Gateway nodes subscribe to the guilds and users of their sessions.
@@ -55,6 +57,13 @@ func Write(ctx context.Context, tx execer, evs ...Event) error {
 			e.Topic, e.Type, payload); err != nil {
 			return fmt.Errorf("events: write %s: %w", e.Type, err)
 		}
+	}
+	if len(evs) == 0 {
+		return nil
+	}
+	// Delivered on commit and deduplicated within the transaction; wakes the relay.
+	if _, err := tx.Exec(ctx, `SELECT pg_notify('`+notifyChannel+`', '')`); err != nil {
+		return fmt.Errorf("events: notify: %w", err)
 	}
 	return nil
 }

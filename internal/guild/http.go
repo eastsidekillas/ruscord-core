@@ -47,6 +47,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"PUT /api/v1/guilds/{guild}/members/{user}/roles/{role}":    h.addRole,
 		"DELETE /api/v1/guilds/{guild}/members/{user}/roles/{role}": h.removeRole,
 	}
+	routes["POST /api/v1/channels/{channel}/invites"] = h.createInvite
+	routes["GET /api/v1/guilds/{guild}/invites"] = h.listInvites
+	routes["GET /api/v1/invites/{code}"] = h.previewInvite
+	routes["POST /api/v1/invites/{code}"] = h.acceptInvite
+	routes["DELETE /api/v1/invites/{code}"] = h.deleteInvite
 	for pattern, fn := range routes {
 		mux.Handle(pattern, h.requireAuth(httpx.Handle(fn)))
 	}
@@ -355,6 +360,62 @@ func (h *Handler) setRole(w http.ResponseWriter, r *http.Request, add bool) erro
 		return err
 	}
 	if err := h.svc.SetMemberRole(r.Context(), me(r), ids[0], ids[1], ids[2], add); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (h *Handler) createInvite(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "channel")
+	if err != nil {
+		return err
+	}
+	var in CreateInviteInput
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		return err
+	}
+	inv, err := h.svc.CreateInvite(r.Context(), me(r), id, in)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusCreated, inv)
+	return nil
+}
+
+func (h *Handler) listInvites(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "guild")
+	if err != nil {
+		return err
+	}
+	invs, err := h.svc.ListInvites(r.Context(), me(r), id)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, invs)
+	return nil
+}
+
+func (h *Handler) previewInvite(w http.ResponseWriter, r *http.Request) error {
+	p, err := h.svc.PreviewInvite(r.Context(), me(r), r.PathValue("code"))
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, p)
+	return nil
+}
+
+func (h *Handler) acceptInvite(w http.ResponseWriter, r *http.Request) error {
+	f, err := h.svc.AcceptInvite(r.Context(), me(r), r.PathValue("code"))
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, f)
+	return nil
+}
+
+func (h *Handler) deleteInvite(w http.ResponseWriter, r *http.Request) error {
+	if err := h.svc.DeleteInvite(r.Context(), me(r), r.PathValue("code")); err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)

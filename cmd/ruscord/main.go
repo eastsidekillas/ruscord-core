@@ -22,6 +22,7 @@ import (
 
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/config"
+	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/health"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
@@ -102,10 +103,11 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		limiter := ratelimit.New(clients.Redis)
 		svc, err := auth.NewService(ctx, auth.Deps{
 			PG:      clients.PG,
 			Signer:  signer,
-			Limiter: ratelimit.New(clients.Redis),
+			Limiter: limiter,
 			Tickets: auth.NewTickets(clients.Redis),
 		})
 		if err != nil {
@@ -113,7 +115,13 @@ func run() error {
 		}
 		authHTTP := auth.NewHandler(svc, !cfg.IsDev())
 		authHTTP.Register(mux)
-		guild.NewHandler(guild.NewService(clients.PG, svc), authHTTP.RequireAuth).Register(mux)
+		guild.NewHandler(guild.NewService(clients.PG, svc, limiter), authHTTP.RequireAuth).Register(mux)
+
+		relay, err := events.NewRelay(clients.PG, clients.NATS, log)
+		if err != nil {
+			return err
+		}
+		go relay.Run(ctx)
 	}
 
 	handler := httpx.Recover(httpx.CheckOrigin(cfg.AllowedOrigins, mux))

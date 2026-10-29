@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,7 +18,7 @@ import (
 
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
-	platformstore "github.com/eastsidekillas/ruscord-core/internal/platform/store"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/testdb"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
 
@@ -37,41 +35,9 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	url := os.Getenv("RUSCORD_TEST_POSTGRES_URL")
-	if url == "" {
-		t.Skip("RUSCORD_TEST_POSTGRES_URL not set")
-	}
+	pg := testdb.New(t)
 	t.Parallel()
 	ctx := context.Background()
-	schema := "t_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-
-	admin, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS citext"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
-		admin.Close()
-	})
-	cfg, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
-	pg, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pg.Close)
-	if err := platformstore.Migrate(ctx, pg, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
-		t.Fatal(err)
-	}
 
 	rdb := redis.NewClient(&redis.Options{Addr: miniredis.RunT(t).Addr()})
 	signer, _ := auth.NewSigner(make([]byte, 32))
@@ -84,7 +50,7 @@ func newEnv(t *testing.T) *env {
 	mux := http.NewServeMux()
 	authHTTP := auth.NewHandler(authSvc, false)
 	authHTTP.Register(mux)
-	svc := NewService(pg, authSvc)
+	svc := NewService(pg, authSvc, ratelimit.New(rdb))
 	NewHandler(svc, authHTTP.RequireAuth).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

@@ -45,19 +45,39 @@ func listRoles(ctx context.Context, q querier, guildID uuid.UUID) ([]Role, error
 	})
 }
 
-func getMember(ctx context.Context, q querier, guildID, userID uuid.UUID) (Member, error) {
+// memberSelect reads members with their role ids; callers add WHERE, ORDER and LIMIT.
+const memberSelect = `SELECT m.guild_id, m.user_id, m.nick, m.joined_at,
+        COALESCE(array_agg(mr.role_id) FILTER (WHERE mr.role_id IS NOT NULL), '{}')
+ FROM members m LEFT JOIN member_roles mr ON mr.guild_id = m.guild_id AND mr.user_id = m.user_id `
+
+const memberGroup = ` GROUP BY m.guild_id, m.user_id `
+
+func scanMember(r pgx.CollectableRow) (Member, error) {
 	var m Member
-	err := q.QueryRow(ctx,
-		`SELECT m.guild_id, m.user_id, m.nick, m.joined_at,
-		        COALESCE(array_agg(mr.role_id) FILTER (WHERE mr.role_id IS NOT NULL), '{}')
-		 FROM members m LEFT JOIN member_roles mr ON mr.guild_id = m.guild_id AND mr.user_id = m.user_id
-		 WHERE m.guild_id = $1 AND m.user_id = $2
-		 GROUP BY m.guild_id, m.user_id`, guildID, userID).
-		Scan(&m.GuildID, &m.UserID, &m.Nick, &m.JoinedAt, &m.RoleIDs)
+	err := r.Scan(&m.GuildID, &m.UserID, &m.Nick, &m.JoinedAt, &m.RoleIDs)
+	return m, err
+}
+
+func getMember(ctx context.Context, q querier, guildID, userID uuid.UUID) (Member, error) {
+	rows, err := q.Query(ctx, memberSelect+`WHERE m.guild_id = $1 AND m.user_id = $2`+memberGroup, guildID, userID)
+	if err != nil {
+		return Member{}, err
+	}
+	m, err := pgx.CollectExactlyOneRow(rows, scanMember)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Member{}, errNotFound
 	}
 	return m, err
+}
+
+func listMembers(ctx context.Context, q querier, guildID, after uuid.UUID, limit int) ([]Member, error) {
+	rows, err := q.Query(ctx,
+		memberSelect+`WHERE m.guild_id = $1 AND m.user_id > $2`+memberGroup+`ORDER BY m.user_id LIMIT $3`,
+		guildID, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scanMember)
 }
 
 func listChannels(ctx context.Context, q querier, guildID uuid.UUID) ([]Channel, error) {
@@ -76,10 +96,7 @@ func listChannels(ctx context.Context, q querier, guildID uuid.UUID) ([]Channel,
 		return nil, err
 	}
 	for i := range chs {
-		chs[i].Overwrites = ows[chs[i].ID]
-		if chs[i].Overwrites == nil {
-			chs[i].Overwrites = []Overwrite{}
-		}
+		chs[i].Overwrites = overwritesOf(ows, chs[i].ID)
 	}
 	return chs, nil
 }
@@ -102,10 +119,7 @@ func getChannel(ctx context.Context, q querier, id uuid.UUID) (Channel, error) {
 	if err != nil {
 		return Channel{}, err
 	}
-	ch.Overwrites = ows[id]
-	if ch.Overwrites == nil {
-		ch.Overwrites = []Overwrite{}
-	}
+	ch.Overwrites = overwritesOf(ows, id)
 	return ch, nil
 }
 
@@ -116,6 +130,14 @@ func scanChannel(r pgx.CollectableRow) (Channel, error) {
 		c.UserLimit, c.Bitrate = 0, 0
 	}
 	return c, err
+}
+
+// overwritesOf never returns nil, so the JSON is [] rather than null.
+func overwritesOf(ows map[uuid.UUID][]Overwrite, channelID uuid.UUID) []Overwrite {
+	if o := ows[channelID]; o != nil {
+		return o
+	}
+	return []Overwrite{}
 }
 
 func overwritesFor(ctx context.Context, q querier, where string, arg any) (map[uuid.UUID][]Overwrite, error) {

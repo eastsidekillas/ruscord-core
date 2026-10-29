@@ -4,9 +4,12 @@ package ratelimit
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 )
 
 type Limiter struct {
@@ -39,4 +42,19 @@ func (l *Limiter) Allow(ctx context.Context, rule Rule, key string) (bool, time.
 		return false, ttl.Val(), nil
 	}
 	return true, 0, nil
+}
+
+// Check is Allow for request handlers: it returns a 429 API error when the
+// limit is exceeded.
+func (l *Limiter) Check(ctx context.Context, rule Rule, key string) error {
+	ok, retry, err := l.Allow(ctx, rule, key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		secs := int(retry.Round(time.Second) / time.Second)
+		return httpx.NewError(http.StatusTooManyRequests, "rate_limited",
+			fmt.Sprintf("Слишком много попыток, повторите через %d с", max(secs, 1)))
+	}
+	return nil
 }
