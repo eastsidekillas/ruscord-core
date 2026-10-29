@@ -67,7 +67,13 @@ attachments, read_states, relationships, invites, calls, outbox
 
 ## Права
 
-Одна чистая функция `ComputePermissions(member, channel)` в `internal/perm`:
+Пакет `internal/perm` (ADR-0011), чистые функции без БД:
+
+- `perm.Base(guild, member)` — права на уровне сервера;
+- `perm.InChannel(guild, member, overwrites)` — права в канале;
+- `perm.InDM(isRecipient, blocked)` — права в личке;
+- `perm.Outranks`, `perm.CanAssignRole` — иерархия ролей;
+- `perm.Voice(p)` — грант для токена LiveKit.
 
 ```
 base = @everyone | OR(roles)
@@ -75,7 +81,8 @@ ADMINISTRATOR или владелец → ALL
 perm = (base &^ ow[@everyone].deny) | ow[@everyone].allow
 perm = (perm &^ OR(ow[roles].deny)) | OR(ow[roles].allow)
 perm = (perm &^ ow[member].deny)    | ow[member].allow
-нет VIEW_CHANNEL → 0
+нет VIEW_CHANNEL → 0; нет SEND_MESSAGES → без вложений и @everyone;
+нет CONNECT → без голосовых прав; нет STREAM → без STREAM_HQ
 ```
 
 Соответствие правам LiveKit: `CONNECT` → roomJoin, `SPEAK` → microphone,
