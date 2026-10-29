@@ -4,6 +4,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -38,6 +39,12 @@ type Config struct {
 	LiveKitURL       string
 	LiveKitAPIKey    string
 	LiveKitAPISecret string
+
+	// JWTSeed is the Ed25519 seed for access tokens. Empty in dev means an
+	// ephemeral key: every restart signs everyone out, which is fine locally.
+	JWTSeed        []byte
+	AllowedOrigins []string
+	AutoMigrate    bool
 }
 
 func (c Config) IsDev() bool { return c.Env == "dev" }
@@ -80,6 +87,20 @@ func load(getenv func(string) string) (Config, error) {
 
 	var errs []error
 
+	if seed := get("RUSCORD_JWT_ED25519_SEED", ""); seed != "" {
+		b, err := hex.DecodeString(seed)
+		if err != nil || len(b) != 32 {
+			errs = append(errs, errors.New("RUSCORD_JWT_ED25519_SEED: must be 64 hex characters"))
+		}
+		c.JWTSeed = b
+	}
+	for _, o := range strings.Split(get("RUSCORD_ALLOWED_ORIGINS", "http://localhost:4200"), ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			c.AllowedOrigins = append(c.AllowedOrigins, o)
+		}
+	}
+	c.AutoMigrate = get("RUSCORD_AUTO_MIGRATE", strconv.FormatBool(c.Env == "dev")) == "true"
+
 	switch c.Env {
 	case "dev", "staging", "prod":
 	default:
@@ -100,6 +121,7 @@ func load(getenv func(string) string) (Config, error) {
 
 	if !c.IsDev() {
 		for key, val := range map[string]string{
+			"RUSCORD_JWT_ED25519_SEED":   string(c.JWTSeed),
 			"RUSCORD_REDIS_PASSWORD":     c.RedisPassword,
 			"RUSCORD_LIVEKIT_API_KEY":    c.LiveKitAPIKey,
 			"RUSCORD_LIVEKIT_API_SECRET": c.LiveKitAPISecret,

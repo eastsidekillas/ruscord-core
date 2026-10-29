@@ -68,7 +68,7 @@ func TestLoadRequiresSecretsOutsideDev(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing secrets in prod")
 	}
-	for _, key := range []string{"RUSCORD_REDIS_PASSWORD", "RUSCORD_LIVEKIT_API_KEY", "RUSCORD_LIVEKIT_API_SECRET"} {
+	for _, key := range []string{"RUSCORD_JWT_ED25519_SEED", "RUSCORD_REDIS_PASSWORD", "RUSCORD_LIVEKIT_API_KEY", "RUSCORD_LIVEKIT_API_SECRET"} {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error does not mention %s: %v", key, err)
 		}
@@ -78,6 +78,7 @@ func TestLoadRequiresSecretsOutsideDev(t *testing.T) {
 func TestLoadRejectsShortLiveKitSecret(t *testing.T) {
 	_, err := load(env(map[string]string{
 		"RUSCORD_ENV":                "staging",
+		"RUSCORD_JWT_ED25519_SEED":   strings.Repeat("ab", 32),
 		"RUSCORD_REDIS_PASSWORD":     "x",
 		"RUSCORD_LIVEKIT_API_KEY":    "key",
 		"RUSCORD_LIVEKIT_API_SECRET": "secret",
@@ -90,5 +91,26 @@ func TestLoadRejectsShortLiveKitSecret(t *testing.T) {
 func TestLoadRejectsUnknownEnv(t *testing.T) {
 	if _, err := load(env(map[string]string{"RUSCORD_ENV": "production"})); err == nil {
 		t.Fatal("expected error for unknown env")
+	}
+}
+
+func TestLoadJWTSeed(t *testing.T) {
+	c, err := load(env(map[string]string{"RUSCORD_JWT_ED25519_SEED": strings.Repeat("0f", 32)}))
+	if err != nil || len(c.JWTSeed) != 32 {
+		t.Fatalf("seed = %d bytes, err = %v", len(c.JWTSeed), err)
+	}
+	if _, err := load(env(map[string]string{"RUSCORD_JWT_ED25519_SEED": "abc"})); err == nil {
+		t.Fatal("expected error for short seed")
+	}
+}
+
+func TestAutoMigrateDefaultsToDevOnly(t *testing.T) {
+	c, _ := load(env(nil))
+	if !c.AutoMigrate {
+		t.Error("dev must auto-migrate by default")
+	}
+	c, _ = load(env(map[string]string{"RUSCORD_ENV": "prod"}))
+	if c.AutoMigrate {
+		t.Error("prod must not auto-migrate by default")
 	}
 }

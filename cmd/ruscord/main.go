@@ -1,9 +1,14 @@
 // Command ruscord runs the Ruscord core. One binary hosts every module
 // (api, gateway, voice); RUSCORD_ROLES selects which of them this process runs.
+//
+//	ruscord           run the server
+//	ruscord migrate   apply database migrations and exit
 package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,11 +20,13 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/config"
 	"github.com/eastsidekillas/ruscord-core/internal/health"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/logx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/store"
+	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
 
 // version is set at build time: -ldflags "-X main.version=..."
@@ -57,6 +64,16 @@ func run() error {
 	}
 	defer clients.Close()
 
+	migrateOnly := len(os.Args) > 1 && os.Args[1] == "migrate"
+	if migrateOnly || cfg.AutoMigrate {
+		if err := store.Migrate(ctx, clients.PG, log); err != nil {
+			return err
+		}
+		if migrateOnly {
+			return nil
+		}
+	}
+
 	mux := http.NewServeMux()
 
 	hc := health.New(2*time.Second, cfg.IsDev())
@@ -71,9 +88,31 @@ func run() error {
 	hc.Register(mux)
 
 	// Modules register their routes here as they land (see docs/roadmap.md).
-	// if cfg.Has(config.RoleAPI)     { api.Register(mux, ...) }
-	// if cfg.Has(config.RoleGateway) { gateway.Register(mux, ...) }
-	// if cfg.Has(config.RoleVoice)   { voice.Register(mux, ...) }
+	if cfg.Has(config.RoleAPI) {
+		seed := cfg.JWTSeed
+		if seed == nil {
+			seed = make([]byte, ed25519.SeedSize)
+			if _, err := rand.Read(seed); err != nil {
+				return err
+			}
+			log.Warn("RUSCORD_JWT_ED25519_SEED is not set: using an ephemeral key, sessions reset on restart")
+		}
+		signer, err := auth.NewSigner(seed)
+		if err != nil {
+			return err
+		}
+		svc, err := auth.NewService(ctx, auth.Deps{
+			PG:      clients.PG,
+			Signer:  signer,
+			Limiter: ratelimit.New(clients.Redis),
+			Tickets: auth.NewTickets(clients.Redis),
+		})
+		if err != nil {
+			return err
+		}
+		auth.NewHandler(svc, !cfg.IsDev()).Register(mux)
+	}
 
-	return httpx.Run(ctx, log, cfg.HTTPAddr, mux, cfg.ShutdownTimeout)
+	handler := httpx.Recover(httpx.CheckOrigin(cfg.AllowedOrigins, mux))
+	return httpx.Run(ctx, log, cfg.HTTPAddr, handler, cfg.ShutdownTimeout)
 }
