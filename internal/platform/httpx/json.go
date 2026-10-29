@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+
+	"github.com/google/uuid"
 )
 
 const maxBodyBytes = 1 << 20
@@ -30,13 +32,6 @@ var (
 	ErrUnauthorized = NewError(http.StatusUnauthorized, "unauthorized", "Требуется вход")
 	ErrForbidden    = NewError(http.StatusForbidden, "forbidden", "Недостаточно прав")
 )
-
-// Validation is the 422 answer for a form with per-field messages.
-func Validation(fields map[string]string) *Error {
-	e := NewError(http.StatusUnprocessableEntity, "validation_failed", "Проверьте поля формы")
-	e.Fields = fields
-	return e
-}
 
 // DecodeJSON reads a JSON body of at most 1 MiB and rejects unknown fields.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
@@ -69,6 +64,26 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "err", err)
 	WriteJSON(w, http.StatusInternalServerError, NewError(http.StatusInternalServerError, "internal", "Внутренняя ошибка"))
+}
+
+// NoContent answers 204 unless err is set; handlers end with
+// `return httpx.NoContent(w, svc.Do(...))`.
+func NoContent(w http.ResponseWriter, err error) error {
+	if err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+// PathUUID parses a path value as a UUID. A malformed id is just another
+// missing object, so it answers 404.
+func PathUUID(r *http.Request, name string) (uuid.UUID, error) {
+	id, err := uuid.Parse(r.PathValue(name))
+	if err != nil {
+		return uuid.Nil, ErrNotFound
+	}
+	return id, nil
 }
 
 // Handle adapts a handler that returns an error.

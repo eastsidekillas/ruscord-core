@@ -15,6 +15,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/slicex"
 )
 
 const (
@@ -95,7 +96,7 @@ func getInvite(ctx context.Context, q querier, code string, lock bool) (Invite, 
 	return scanInvite(q.QueryRow(ctx, sql, code))
 }
 
-// checkVisible reports ErrNotFound unless userID, joining with @everyone
+// checkVisible reports httpx.ErrNotFound unless userID, joining with @everyone
 // only, could view the invite's channel. An invite to a channel that was
 // hidden after the invite was made must not reveal the channel or let anyone in.
 func checkVisible(ctx context.Context, q querier, inv Invite, userID uuid.UUID) (Guild, Channel, error) {
@@ -108,7 +109,7 @@ func checkVisible(ctx context.Context, q querier, inv Invite, userID uuid.UUID) 
 		return Guild{}, Channel{}, notFound(err)
 	}
 	if !a.in(ch).Has(perm.ViewChannel) {
-		return Guild{}, Channel{}, ErrNotFound
+		return Guild{}, Channel{}, httpx.ErrNotFound
 	}
 	return a.guild, ch, nil
 }
@@ -132,14 +133,14 @@ func (s *Service) CreateInvite(ctx context.Context, userID, channelID uuid.UUID,
 	if in.MaxAge != nil {
 		age = time.Duration(*in.MaxAge) * time.Second
 	}
-	fields := map[string]string{}
+	fields := httpx.Fields{}
 	if age < 0 || age > maxInviteAge {
 		fields["max_age"] = "От 0 (бессрочно) до 604800 секунд"
 	}
 	if in.MaxUses < 0 || in.MaxUses > 100 {
 		fields["max_uses"] = "От 0 (без ограничений) до 100"
 	}
-	if err := validation(fields); err != nil {
+	if err := fields.Err(); err != nil {
 		return Invite{}, err
 	}
 	if err := s.limiter.Check(ctx, ruleInviteCreate, userID.String()); err != nil {
@@ -191,14 +192,14 @@ func (s *Service) PreviewInvite(ctx context.Context, userID uuid.UUID, code stri
 		return InvitePreview{}, err
 	}
 	if !validCode(code) {
-		return InvitePreview{}, ErrNotFound
+		return InvitePreview{}, httpx.ErrNotFound
 	}
 	inv, err := getInvite(ctx, s.pg, code, false)
 	if err != nil {
 		return InvitePreview{}, notFound(err)
 	}
 	if !inv.usable(s.now()) {
-		return InvitePreview{}, ErrNotFound
+		return InvitePreview{}, httpx.ErrNotFound
 	}
 	g, ch, err := checkVisible(ctx, s.pg, inv, userID)
 	if err != nil {
@@ -216,7 +217,7 @@ func (s *Service) PreviewInvite(ctx context.Context, userID uuid.UUID, code stri
 		MemberCount: count,
 		ExpiresAt:   inv.ExpiresAt,
 	}
-	if err := attachUsers(ctx, s.users, []*InvitePreview{&out}, func(*InvitePreview) *uuid.UUID { return inv.InviterID },
+	if err := auth.Attach(ctx, s.users, []*InvitePreview{&out}, func(*InvitePreview) *uuid.UUID { return inv.InviterID },
 		func(p *InvitePreview, u auth.PublicUser) { p.Inviter = u }); err != nil {
 		return InvitePreview{}, err
 	}
@@ -230,7 +231,7 @@ func (s *Service) AcceptInvite(ctx context.Context, userID uuid.UUID, code strin
 		return Full{}, err
 	}
 	if !validCode(code) {
-		return Full{}, ErrNotFound
+		return Full{}, httpx.ErrNotFound
 	}
 	inv, err := getInvite(ctx, s.pg, code, false)
 	if err != nil {
@@ -247,7 +248,7 @@ func (s *Service) AcceptInvite(ctx context.Context, userID uuid.UUID, code strin
 			return notFound(err)
 		}
 		if !inv.usable(s.now()) {
-			return ErrNotFound
+			return httpx.ErrNotFound
 		}
 		if _, err := getMember(ctx, tx, inv.GuildID, userID); err == nil {
 			full, err = s.full(ctx, tx, inv.GuildID, userID)
@@ -284,7 +285,7 @@ func (s *Service) ListInvites(ctx context.Context, userID, guildID uuid.UUID) ([
 	if err != nil {
 		return nil, err
 	}
-	if err := attachUsers(ctx, s.users, ptrs(invs), func(i *Invite) *uuid.UUID { return i.InviterID },
+	if err := auth.Attach(ctx, s.users, slicex.Ptrs(invs), func(i *Invite) *uuid.UUID { return i.InviterID },
 		func(i *Invite, u auth.PublicUser) { i.Inviter = u }); err != nil {
 		return nil, err
 	}
@@ -295,7 +296,7 @@ func (s *Service) ListInvites(ctx context.Context, userID, guildID uuid.UUID) ([
 // and to MANAGE_GUILD.
 func (s *Service) DeleteInvite(ctx context.Context, userID uuid.UUID, code string) error {
 	if !validCode(code) {
-		return ErrNotFound
+		return httpx.ErrNotFound
 	}
 	inv, err := getInvite(ctx, s.pg, code, false)
 	if err != nil {

@@ -29,11 +29,19 @@ const (
 	MemberRemove  = "GUILD_MEMBER_REMOVE"
 	InviteCreate  = "INVITE_CREATE"
 	InviteDelete  = "INVITE_DELETE"
+
+	RelationshipAdd    = "RELATIONSHIP_ADD"
+	RelationshipRemove = "RELATIONSHIP_REMOVE"
+	RecipientAdd       = "CHANNEL_RECIPIENT_ADD"
+	RecipientRemove    = "CHANNEL_RECIPIENT_REMOVE"
 )
 
 // Topics. Gateway nodes subscribe to the guilds and users of their sessions.
 func GuildTopic(id uuid.UUID) string { return "guild." + id.String() }
 func UserTopic(id uuid.UUID) string  { return "user." + id.String() }
+
+// ChannelTopic carries events of a direct-message channel to its recipients.
+func ChannelTopic(id uuid.UUID) string { return "channel." + id.String() }
 
 type Event struct {
 	Topic string

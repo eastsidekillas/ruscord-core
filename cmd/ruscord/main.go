@@ -29,6 +29,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/logx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/store"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
+	"github.com/eastsidekillas/ruscord-core/internal/social"
 )
 
 // version is set at build time: -ldflags "-X main.version=..."
@@ -115,7 +116,9 @@ func run() error {
 		}
 		authHTTP := auth.NewHandler(svc, !cfg.IsDev())
 		authHTTP.Register(mux)
-		guild.NewHandler(guild.NewService(clients.PG, svc, limiter), authHTTP.RequireAuth).Register(mux)
+		guilds := guild.NewService(clients.PG, svc, limiter)
+		guild.NewHandler(guilds, authHTTP.RequireAuth).Register(mux)
+		social.NewHandler(social.NewService(clients.PG, svc, guilds, limiter), authHTTP.RequireAuth).Register(mux)
 
 		relay, err := events.NewRelay(clients.PG, clients.NATS, log)
 		if err != nil {

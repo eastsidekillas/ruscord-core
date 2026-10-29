@@ -2,7 +2,6 @@ package guild
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -19,13 +18,11 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/slicex"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
 
 var (
-	// ErrNotFound is returned for missing objects and for objects the caller
-	// cannot see, so existence cannot be probed.
-	ErrNotFound       = httpx.NewError(http.StatusNotFound, "not_found", "Не найдено")
 	errOwnerCannotGo  = httpx.NewError(http.StatusBadRequest, "owner_cannot_leave", "Владелец не может покинуть сервер, сначала удалите его")
 	errTooManyGuilds  = httpx.NewError(http.StatusBadRequest, "too_many_guilds", "Достигнут лимит серверов")
 	errTooManyChans   = httpx.NewError(http.StatusBadRequest, "too_many_channels", "Достигнут лимит каналов на сервере")
@@ -46,9 +43,7 @@ var (
 )
 
 // UserDirectory resolves public profiles; auth.Service implements it.
-type UserDirectory interface {
-	Users(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]auth.PublicUser, error)
-}
+type UserDirectory = auth.Directory
 
 type Service struct {
 	pg      *pgxpool.Pool
@@ -83,44 +78,9 @@ func (s *Service) mutate(ctx context.Context, guildID, userID uuid.UUID, fn func
 
 func notFound(err error) error {
 	if errors.Is(err, errNotFound) {
-		return ErrNotFound
+		return httpx.ErrNotFound
 	}
 	return err
-}
-
-func validation(fields map[string]string) error {
-	if len(fields) == 0 {
-		return nil
-	}
-	return httpx.Validation(fields)
-}
-
-func checkName(fields map[string]string, key, v string, minLen, maxLen int) {
-	if n := utf8.RuneCountInString(v); n < minLen || n > maxLen {
-		fields[key] = "Длина от " + itoa(minLen) + " до " + itoa(maxLen) + " символов"
-	}
-}
-
-func itoa(n int) string { return strconv.Itoa(n) }
-
-// optional distinguishes an absent JSON field from an explicit null.
-type optional[T any] struct {
-	Set   bool
-	Value *T
-}
-
-func (o *optional[T]) UnmarshalJSON(b []byte) error {
-	o.Set = true
-	if string(b) == "null" {
-		o.Value = nil
-		return nil
-	}
-	var v T
-	if err := json.Unmarshal(b, &v); err != nil {
-		return err
-	}
-	o.Value = &v
-	return nil
 }
 
 // ---- guilds ----
@@ -133,9 +93,9 @@ type CreateGuildInput struct {
 // voice channel.
 func (s *Service) Create(ctx context.Context, userID uuid.UUID, in CreateGuildInput) (Full, error) {
 	in.Name = strings.TrimSpace(in.Name)
-	fields := map[string]string{}
-	checkName(fields, "name", in.Name, 2, 100)
-	if err := validation(fields); err != nil {
+	fields := httpx.Fields{}
+	fields.Length("name", in.Name, 2, 100)
+	if err := fields.Err(); err != nil {
 		return Full{}, err
 	}
 	if err := s.limiter.Check(ctx, ruleGuildCreate, userID.String()); err != nil {
@@ -222,6 +182,15 @@ func (s *Service) Get(ctx context.Context, userID, guildID uuid.UUID) (Full, err
 	return f, notFound(err)
 }
 
+// SharesGuild reports whether two users are members of at least one common guild.
+func (s *Service) SharesGuild(ctx context.Context, a, b uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.pg.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM members x JOIN members y ON y.guild_id = x.guild_id
+		                WHERE x.user_id = $1 AND y.user_id = $2)`, a, b).Scan(&ok)
+	return ok, err
+}
+
 // ListMine returns the guilds userID is a member of, in join order.
 func (s *Service) ListMine(ctx context.Context, userID uuid.UUID) ([]Guild, error) {
 	rows, err := s.pg.Query(ctx,
@@ -243,12 +212,12 @@ type UpdateGuildInput struct {
 }
 
 func (s *Service) Update(ctx context.Context, userID, guildID uuid.UUID, in UpdateGuildInput) (Guild, error) {
-	fields := map[string]string{}
+	fields := httpx.Fields{}
 	if in.Name != nil {
 		*in.Name = strings.TrimSpace(*in.Name)
-		checkName(fields, "name", *in.Name, 2, 100)
+		fields.Length("name", *in.Name, 2, 100)
 	}
-	if err := validation(fields); err != nil {
+	if err := fields.Err(); err != nil {
 		return Guild{}, err
 	}
 	var g Guild
@@ -294,8 +263,8 @@ type CreateChannelInput struct {
 	Bitrate   int         `json:"bitrate"`
 }
 
-func validateChannel(fields map[string]string, typ ChannelType, name, topic string, userLimit, bitrate int) {
-	checkName(fields, "name", name, 1, 100)
+func validateChannel(fields httpx.Fields, typ ChannelType, name, topic string, userLimit, bitrate int) {
+	fields.Length("name", name, 1, 100)
 	if utf8.RuneCountInString(topic) > 1024 {
 		fields["topic"] = "Не длиннее 1024 символов"
 	}
@@ -312,7 +281,7 @@ func validateChannel(fields map[string]string, typ ChannelType, name, topic stri
 
 func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, in CreateChannelInput) (Channel, error) {
 	in.Name, in.Topic = strings.TrimSpace(in.Name), strings.TrimSpace(in.Topic)
-	fields := map[string]string{}
+	fields := httpx.Fields{}
 	if !in.Type.inGuild() {
 		fields["type"] = "Допустимы 0 (текст), 2 (голос), 4 (категория)"
 	}
@@ -320,7 +289,7 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 	if in.Type == ChannelCategory && in.ParentID != nil {
 		fields["parent_id"] = "Категория не может быть вложенной"
 	}
-	if err := validation(fields); err != nil {
+	if err := fields.Err(); err != nil {
 		return Channel{}, err
 	}
 	if in.Bitrate == 0 {
@@ -370,7 +339,7 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 func checkParent(ctx context.Context, q querier, guildID, parentID uuid.UUID) error {
 	p, err := getChannel(ctx, q, parentID)
 	if errors.Is(err, errNotFound) || (err == nil && (p.GuildID != guildID || p.Type != ChannelCategory)) {
-		return validation(map[string]string{"parent_id": "Нет такой категории на этом сервере"})
+		return httpx.Validation(map[string]string{"parent_id": "Нет такой категории на этом сервере"})
 	}
 	return err
 }
@@ -390,19 +359,19 @@ func (s *Service) withChannel(ctx context.Context, userID, channelID uuid.UUID, 
 		}
 		p := a.in(ch)
 		if !p.Has(perm.ViewChannel) {
-			return ErrNotFound
+			return httpx.ErrNotFound
 		}
 		return fn(tx, a, ch, p)
 	})
 }
 
 type UpdateChannelInput struct {
-	Name      *string             `json:"name"`
-	Topic     *string             `json:"topic"`
-	ParentID  optional[uuid.UUID] `json:"parent_id"`
-	Position  *int                `json:"position"`
-	UserLimit *int                `json:"user_limit"`
-	Bitrate   *int                `json:"bitrate"`
+	Name      *string                   `json:"name"`
+	Topic     *string                   `json:"topic"`
+	ParentID  httpx.Optional[uuid.UUID] `json:"parent_id"`
+	Position  *int                      `json:"position"`
+	UserLimit *int                      `json:"user_limit"`
+	Bitrate   *int                      `json:"bitrate"`
 }
 
 func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID, in UpdateChannelInput) (Channel, error) {
@@ -430,7 +399,7 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID
 		if in.Bitrate != nil {
 			bitrate = *in.Bitrate
 		}
-		fields := map[string]string{}
+		fields := httpx.Fields{}
 		validateChannel(fields, ch.Type, ch.Name, ch.Topic, limit, bitrate)
 		if ch.Position < 0 {
 			fields["position"] = "Не меньше 0"
@@ -441,7 +410,7 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID
 				fields["parent_id"] = "Категория не может быть вложенной"
 			}
 		}
-		if err := validation(fields); err != nil {
+		if err := fields.Err(); err != nil {
 			return err
 		}
 		if ch.ParentID != nil && in.ParentID.Set {
@@ -501,7 +470,7 @@ type OverwriteInput struct {
 // deny permissions they have there, so an overwrite cannot escalate anyone
 // above the caller.
 func (s *Service) PutOverwrite(ctx context.Context, userID, channelID, targetID uuid.UUID, in OverwriteInput) (Channel, error) {
-	fields := map[string]string{}
+	fields := httpx.Fields{}
 	if in.Type != perm.TargetRole && in.Type != perm.TargetMember {
 		fields["type"] = "1 (роль) или 2 (участник)"
 	}
@@ -514,7 +483,7 @@ func (s *Service) PutOverwrite(ctx context.Context, userID, channelID, targetID 
 	if in.Allow&in.Deny != 0 {
 		fields["deny"] = "Бит не может быть одновременно в allow и deny"
 	}
-	if err := validation(fields); err != nil {
+	if err := fields.Err(); err != nil {
 		return Channel{}, err
 	}
 	var out Channel
@@ -530,12 +499,12 @@ func (s *Service) PutOverwrite(ctx context.Context, userID, channelID, targetID 
 		switch in.Type {
 		case perm.TargetRole:
 			if _, ok := a.role(targetID); !ok {
-				return validation(map[string]string{"target_id": "Нет такой роли на сервере"})
+				return httpx.Validation(map[string]string{"target_id": "Нет такой роли на сервере"})
 			}
 		case perm.TargetMember:
 			if _, err := getMember(ctx, tx, ch.GuildID, targetID); err != nil {
 				if errors.Is(err, errNotFound) {
-					return validation(map[string]string{"target_id": "Нет такого участника на сервере"})
+					return httpx.Validation(map[string]string{"target_id": "Нет такого участника на сервере"})
 				}
 				return err
 			}
@@ -574,7 +543,7 @@ func (s *Service) DeleteOverwrite(ctx context.Context, userID, channelID, target
 			}
 		}
 		if !found {
-			return ErrNotFound
+			return httpx.ErrNotFound
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM permission_overwrites WHERE channel_id = $1 AND target_id = $2`, ch.ID, targetID); err != nil {
 			return err
@@ -605,10 +574,10 @@ type RoleInput struct {
 }
 
 func (in RoleInput) validate(creating bool) error {
-	fields := map[string]string{}
+	fields := httpx.Fields{}
 	if in.Name != nil {
 		*in.Name = strings.TrimSpace(*in.Name)
-		checkName(fields, "name", *in.Name, 1, 100)
+		fields.Length("name", *in.Name, 1, 100)
 	} else if creating {
 		fields["name"] = "Обязательное поле"
 	}
@@ -621,7 +590,7 @@ func (in RoleInput) validate(creating bool) error {
 	if creating && in.Position != nil {
 		fields["position"] = "Новая роль создаётся над @everyone, порядок меняется через PATCH"
 	}
-	return validation(fields)
+	return fields.Err()
 }
 
 // CreateRole adds a role right above @everyone (position 1).
@@ -689,7 +658,7 @@ func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID uuid.U
 	err := s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
 		r, ok := a.role(roleID)
 		if !ok {
-			return ErrNotFound
+			return httpx.ErrNotFound
 		}
 		everyone := r.ID == guildID
 		if everyone {
@@ -719,7 +688,7 @@ func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID uuid.U
 		if in.Position != nil {
 			next.Position = *in.Position
 			if next.Position < 1 || next.Position > len(a.roles)-1 {
-				return validation(map[string]string{"position": "От 1 до " + itoa(len(a.roles)-1)})
+				return httpx.Validation(map[string]string{"position": "От 1 до " + strconv.Itoa(len(a.roles)-1)})
 			}
 		}
 		if !everyone && !perm.CanAssignRole(a.pg, a.member, perm.Role{ID: next.ID, Position: next.Position, Permissions: next.Permissions}) {
@@ -759,7 +728,7 @@ func (s *Service) DeleteRole(ctx context.Context, userID, guildID, roleID uuid.U
 	return s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
 		r, ok := a.role(roleID)
 		if !ok {
-			return ErrNotFound
+			return httpx.ErrNotFound
 		}
 		if r.ID == guildID {
 			return errEveryoneDelete
@@ -824,40 +793,8 @@ func (s *Service) addMember(ctx context.Context, tx pgx.Tx, guildID, userID uuid
 }
 
 func (s *Service) attachUsers(ctx context.Context, ms []*Member) error {
-	return attachUsers(ctx, s.users, ms, func(m *Member) *uuid.UUID { return &m.UserID },
+	return auth.Attach(ctx, s.users, ms, func(m *Member) *uuid.UUID { return &m.UserID },
 		func(m *Member, u auth.PublicUser) { m.User = u })
-}
-
-// ptrs returns pointers to the elements of xs, for helpers that fill them in place.
-func ptrs[T any](xs []T) []*T {
-	out := make([]*T, len(xs))
-	for i := range xs {
-		out[i] = &xs[i]
-	}
-	return out
-}
-
-// attachUsers looks up the public profile behind each item's user id in one
-// query and stores it with set. Items without a user id are skipped.
-func attachUsers[T any](ctx context.Context, dir UserDirectory, items []*T, id func(*T) *uuid.UUID, set func(*T, auth.PublicUser)) error {
-	ids := make([]uuid.UUID, 0, len(items))
-	for _, it := range items {
-		if p := id(it); p != nil {
-			ids = append(ids, *p)
-		}
-	}
-	users, err := dir.Users(ctx, ids)
-	if err != nil {
-		return err
-	}
-	for _, it := range items {
-		if p := id(it); p != nil {
-			if u, ok := users[*p]; ok {
-				set(it, u)
-			}
-		}
-	}
-	return nil
 }
 
 // ListMembers pages through members ordered by user id.
@@ -872,7 +809,7 @@ func (s *Service) ListMembers(ctx context.Context, userID, guildID, after uuid.U
 	if err != nil {
 		return nil, err
 	}
-	return ms, s.attachUsers(ctx, ptrs(ms))
+	return ms, s.attachUsers(ctx, slicex.Ptrs(ms))
 }
 
 // SetMemberRole adds (add=true) or removes a role. The caller must be able to
@@ -882,7 +819,7 @@ func (s *Service) SetMemberRole(ctx context.Context, userID, guildID, targetID, 
 	return s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
 		r, ok := a.role(roleID)
 		if !ok {
-			return ErrNotFound
+			return httpx.ErrNotFound
 		}
 		if r.ID == guildID {
 			return errEveryoneAssign
@@ -956,7 +893,7 @@ func (s *Service) RemoveMember(ctx context.Context, userID, guildID, targetID uu
 }
 
 type UpdateSelfInput struct {
-	Nick optional[string] `json:"nick"`
+	Nick httpx.Optional[string] `json:"nick"`
 }
 
 // UpdateSelf changes the caller's own nickname (null or "" clears it).
@@ -969,9 +906,9 @@ func (s *Service) UpdateSelf(ctx context.Context, userID, guildID uuid.UUID, in 
 		}
 	}
 	if nick != nil {
-		fields := map[string]string{}
-		checkName(fields, "nick", *nick, 1, 32)
-		if err := validation(fields); err != nil {
+		fields := httpx.Fields{}
+		fields.Length("nick", *nick, 1, 32)
+		if err := fields.Err(); err != nil {
 			return err
 		}
 	}
