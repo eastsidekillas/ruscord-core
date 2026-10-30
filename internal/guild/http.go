@@ -46,6 +46,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"GET /api/v1/guilds/{guild}/members":                        h.listMembers,
 		"PATCH /api/v1/guilds/{guild}/members/@me":                  h.updateSelf,
 		"DELETE /api/v1/guilds/{guild}/members/{user}":              h.removeMember,
+		"GET /api/v1/guilds/{guild}/bans":                           h.listBans,
+		"PUT /api/v1/guilds/{guild}/bans/{user}":                    h.ban,
+		"DELETE /api/v1/guilds/{guild}/bans/{user}":                 h.unban,
 		"PUT /api/v1/guilds/{guild}/members/{user}/roles/{role}":    h.addRole,
 		"DELETE /api/v1/guilds/{guild}/members/{user}/roles/{role}": h.removeRole,
 
@@ -345,6 +348,41 @@ func (h *Handler) removeMember(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return httpx.NoContent(w, h.svc.RemoveMember(r.Context(), auth.UserID(r), ids[0], ids[1]))
+}
+
+func (h *Handler) listBans(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "guild")
+	if err != nil {
+		return err
+	}
+	bans, err := h.svc.ListBans(r.Context(), auth.UserID(r), id)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, bans)
+	return nil
+}
+
+func (h *Handler) ban(w http.ResponseWriter, r *http.Request) error {
+	ids, err := pathIDs(r, "guild", "user")
+	if err != nil {
+		return err
+	}
+	var in BanInput // the body is optional, like in Discord
+	if r.ContentLength != 0 {
+		if err := httpx.DecodeJSON(w, r, &in); err != nil {
+			return err
+		}
+	}
+	return httpx.NoContent(w, h.svc.BanMember(r.Context(), auth.UserID(r), ids[0], ids[1], in))
+}
+
+func (h *Handler) unban(w http.ResponseWriter, r *http.Request) error {
+	ids, err := pathIDs(r, "guild", "user")
+	if err != nil {
+		return err
+	}
+	return httpx.NoContent(w, h.svc.Unban(r.Context(), auth.UserID(r), ids[0], ids[1]))
 }
 
 func (h *Handler) addRole(w http.ResponseWriter, r *http.Request) error { return h.setRole(w, r, true) }

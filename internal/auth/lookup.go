@@ -18,6 +18,8 @@ type PublicUser struct {
 	DisplayName string    `json:"display_name"`
 	// Avatar is the URL path of the avatar (/cdn/...), or null.
 	Avatar *string `json:"avatar"`
+	// Deleted marks a deleted account; its name and avatar are not shown.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 // Public is the part of u that other users may see.
@@ -25,13 +27,21 @@ func (u User) Public() PublicUser {
 	return PublicUser{ID: u.ID, Username: u.Username, DisplayName: u.DisplayName, Avatar: u.Avatar}
 }
 
-const publicCols = `id, username, display_name, avatar`
+const publicCols = `id, username, display_name, avatar, deleted_at IS NOT NULL`
+
+// deletedName is what others see instead of a deleted account's names.
+const deletedName = "Удалённый пользователь"
 
 func scanPublic(row pgx.Row) (PublicUser, error) {
 	var u PublicUser
 	var avatar *string
-	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &avatar)
+	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &avatar, &u.Deleted)
 	u.Avatar = blob.URLPtr(avatar)
+	if u.Deleted {
+		// The row keeps its data (docs/adr/0021-bans-account-deletion.md);
+		// nobody is shown it.
+		u.Username, u.DisplayName, u.Avatar = "deleted", deletedName, nil
+	}
 	return u, err
 }
 
@@ -92,7 +102,7 @@ func (s *Service) UserByUsername(ctx context.Context, username string) (PublicUs
 	if !usernameRe.MatchString(username) {
 		return PublicUser{}, httpx.ErrNotFound // cannot exist; also keeps NUL away from Postgres
 	}
-	u, err := scanPublic(s.store.pg.QueryRow(ctx, `SELECT `+publicCols+` FROM users WHERE username = $1`, username))
+	u, err := scanPublic(s.store.pg.QueryRow(ctx, `SELECT `+publicCols+` FROM users WHERE username = $1 AND deleted_at IS NULL`, username))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PublicUser{}, httpx.ErrNotFound
 	}

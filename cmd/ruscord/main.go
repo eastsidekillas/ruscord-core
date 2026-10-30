@@ -141,6 +141,7 @@ func run() error {
 			guilds.WithFiles(files)
 		}
 		socials := social.NewService(clients.PG, svc, guilds, limiter)
+		svc.OnAccountDeleted(guilds, socials)
 		eph := events.NewEphemeral(clients.NATS)
 		gwOpts := gateway.Options{AllowedOrigins: cfg.AllowedOrigins}
 		pres := presence.NewService(clients.Redis, eph, guilds, gateway.PresenceTTL(gwOpts))
@@ -163,6 +164,7 @@ func run() error {
 			if files != nil {
 				go files.Run(ctx, time.Minute)
 			}
+			go svc.RunAccountCleanup(ctx, time.Minute)
 		}
 		if cfg.Has(config.RoleGateway) {
 			gw, err := gateway.New(ctx, gateway.Deps{Auth: svc, Guilds: guilds, Social: socials, Presence: pres,
