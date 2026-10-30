@@ -14,6 +14,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -387,5 +388,66 @@ func TestLoginOverlongEmail(t *testing.T) {
 		map[string]string{"email": strings.Repeat("a", 300) + "@example.com", "password": "s3cret-pass"})
 	if resp.StatusCode != http.StatusUnauthorized || body["code"] != "invalid_credentials" {
 		t.Fatalf("overlong email: %d %v", resp.StatusCode, body)
+	}
+}
+
+// Revoking a session writes SESSION_REVOKE once, so gateway connections of
+// that session close; SessionActive turns false. Covers logout and reuse.
+func TestRevokeNotifiesGateway(t *testing.T) {
+	e := newEnv(t)
+	revokes := func() []string {
+		rows, err := e.pg.Query(t.Context(), `SELECT payload->>'session_id' FROM outbox WHERE type = 'SESSION_REVOKE' ORDER BY id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ids
+	}
+	sessionOf := func(c *client) uuid.UUID {
+		p, err := e.svc.Authenticate(c.access)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.SessionID
+	}
+
+	out := e.client(t)
+	register(t, out, "timofey")
+	sid := sessionOf(out)
+	if ok, err := e.svc.SessionActive(t.Context(), sid); !ok || err != nil {
+		t.Fatalf("fresh session active = %v, %v", ok, err)
+	}
+	out.do("POST", "/api/v1/auth/logout", nil)
+	if ok, _ := e.svc.SessionActive(t.Context(), sid); ok {
+		t.Fatal("session active after logout")
+	}
+	if got := revokes(); len(got) != 1 || got[0] != sid.String() {
+		t.Fatalf("revoke events after logout = %v, want [%s]", got, sid)
+	}
+
+	victim := e.client(t)
+	register(t, victim, "victim")
+	stolen := victim.refresh
+	victimSID := sessionOf(victim)
+	victim.do("POST", "/api/v1/auth/refresh", nil)
+	e.clock.Add(refreshGrace + time.Second)
+	(&client{t: t, base: victim.base, refresh: stolen}).do("POST", "/api/v1/auth/refresh", nil)
+	(&client{t: t, base: victim.base, refresh: stolen}).do("POST", "/api/v1/auth/refresh", nil)
+	if got := revokes(); len(got) != 2 || got[1] != victimSID.String() {
+		t.Fatalf("revoke events after reuse = %v, want a second one for %s", got, victimSID)
+	}
+
+	if ok, _ := e.svc.SessionActive(t.Context(), uuid.New()); ok {
+		t.Fatal("unknown session reported active")
+	}
+	expiring := e.client(t)
+	register(t, expiring, "expiring")
+	expiringSID := sessionOf(expiring)
+	e.clock.Add(refreshTTL + time.Hour)
+	if ok, _ := e.svc.SessionActive(t.Context(), expiringSID); ok {
+		t.Fatal("expired session reported active")
 	}
 }

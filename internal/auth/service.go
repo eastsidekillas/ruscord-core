@@ -324,6 +324,18 @@ func (s *Service) Authenticate(token string) (Principal, error) {
 	return p, nil
 }
 
+// SessionActive reports whether a sign-in session is still valid. The gateway
+// checks it when a connection identifies, because a ticket can be issued
+// with an access token of a session revoked minutes ago.
+func (s *Service) SessionActive(ctx context.Context, sid uuid.UUID) (bool, error) {
+	return s.store.sessionActive(ctx, sid, s.now().UTC())
+}
+
+// ConsumeTicket exchanges a gateway ticket for the principal it was issued to.
+func (s *Service) ConsumeTicket(ctx context.Context, ticket string) (Principal, error) {
+	return s.tickets.Consume(ctx, ticket)
+}
+
 func (s *Service) IssueTicket(ctx context.Context, p Principal) (string, error) {
 	if err := s.limit(ctx, ruleTicket, p.SessionID.String()); err != nil {
 		return "", err

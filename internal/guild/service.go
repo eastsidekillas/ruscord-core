@@ -172,17 +172,11 @@ func (s *Service) full(ctx context.Context, q querier, guildID, userID uuid.UUID
 	if err != nil {
 		return Full{}, err
 	}
-	visible := make([]Channel, 0, len(chs))
-	for _, ch := range chs {
-		if a.in(ch).Has(perm.ViewChannel) {
-			visible = append(visible, ch)
-		}
-	}
-	m := a.full
-	if err := s.attachUsers(ctx, []*Member{&m}); err != nil {
+	snap := Snapshot{Guild: a.guild, Roles: a.roles, Channels: chs, Member: a.full}
+	if err := s.attachUsers(ctx, []*Member{&snap.Member}); err != nil {
 		return Full{}, err
 	}
-	return Full{Guild: a.guild, Roles: a.roles, Channels: visible, Member: &m, Permissions: a.base()}, nil
+	return snap.Full(snap.View()), nil
 }
 
 // Get returns the guild if userID is a member.

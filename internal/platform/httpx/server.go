@@ -12,11 +12,18 @@ import (
 
 // Run serves h on addr until ctx is cancelled, then drains connections for
 // up to shutdownTimeout.
+//
+// Read and write timeouts bound slow clients on REST (bodies are at most
+// 1 MiB). They do not apply to WebSockets: net/http clears deadlines when a
+// connection is hijacked, and hijacked connections are not drained by
+// Shutdown, so the gateway closes its own on ctx.
 func Run(ctx context.Context, log *slog.Logger, addr string, h http.Handler, shutdownTimeout time.Duration) error {
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}

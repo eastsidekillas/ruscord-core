@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/eastsidekillas/ruscord-core/internal/events"
 )
 
 type User struct {
@@ -131,8 +133,29 @@ func rotateSession(ctx context.Context, tx pgx.Tx, id uuid.UUID, newHash, prevHa
 	return err
 }
 
-func revokeSession(ctx context.Context, db execer, id uuid.UUID, reason string, now time.Time) error {
-	_, err := db.Exec(ctx,
-		`UPDATE sessions SET revoked_at = $2, revoke_reason = $3 WHERE id = $1 AND revoked_at IS NULL`, id, now, reason)
-	return err
+// revokeSession marks the session revoked and, in the same transaction,
+// tells gateway connections of that session to close (they outlive the
+// access token otherwise).
+func revokeSession(ctx context.Context, tx pgx.Tx, id uuid.UUID, reason string, now time.Time) error {
+	var userID uuid.UUID
+	err := tx.QueryRow(ctx,
+		`UPDATE sessions SET revoked_at = $2, revoke_reason = $3 WHERE id = $1 AND revoked_at IS NULL
+		 RETURNING user_id`, id, now, reason).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // already revoked
+	}
+	if err != nil {
+		return err
+	}
+	return events.Write(ctx, tx, events.Event{
+		Topic: events.UserTopic(userID), Type: events.SessionRevoke, Data: map[string]any{"session_id": id},
+	})
+}
+
+// sessionActive reports whether the session exists, is not revoked and has not expired.
+func (s *store) sessionActive(ctx context.Context, id uuid.UUID, now time.Time) (bool, error) {
+	var ok bool
+	err := s.pg.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1 AND revoked_at IS NULL AND expires_at > $2)`, id, now).Scan(&ok)
+	return ok, err
 }

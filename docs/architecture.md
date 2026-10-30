@@ -34,22 +34,27 @@ Caddy/nginx ──► api ──► Postgres                LiveKit SFU (+TURN)
 ## Протокол gateway (v1)
 
 ```
-→ POST /gateway/ticket          (cookie-сессия) ← { ticket, ttl: 30s, одноразовый }
+→ POST /api/v1/gateway/ticket   (cookie-сессия) ← { ticket, expires_in: 30 }, одноразовый
 → WSS  /gateway?v=1
-→ IDENTIFY { ticket, device }   или  RESUME { session_id, seq }
 ← HELLO { heartbeat_interval }
-← READY { session_id, user, guilds, dms, relationships, read_states, voice_states }
-← DISPATCH { t, s, d }          s монотонно растёт в рамках сессии
-→ HEARTBEAT { seq }             ← HEARTBEAT_ACK
-→ PRESENCE_UPDATE, VOICE_STATE_UPDATE
-← VOICE_SERVER_UPDATE { endpoint, token, room }
-← RECONNECT, INVALID_SESSION
+→ IDENTIFY { ticket }           или  RESUME { ticket, session_id, seq }
+← READY { v, session_id, user, guilds, dms, relationships }   s = 1
+← DISPATCH { t, s, d }          s растёт на единицу в рамках сессии
+→ HEARTBEAT { последний s }     ← HEARTBEAT_ACK
+← закрытие с кодом 4xxx: что делать дальше, решает код (docs/api.md)
+позже: → PRESENCE_UPDATE, VOICE_STATE_UPDATE; ← VOICE_SERVER_UPDATE, read_states и voice_states в READY
 ```
 
 Тикет передаётся в первом сообщении, а не в URL, чтобы не попадать в логи прокси.
-Нода gateway подписывается в NATS на `guild.<id>` для серверов своих сессий и на
-`user.<id>` для личных событий. Presence получают только друзья и участники общих
-серверов.
+Каждая сессия читает стрим `EVENTS` своим упорядоченным потребителем JetStream с
+фильтром `user.<id>`, `guild.<id>` своих серверов и `channel.<id>` своих личек;
+при входе в сервер или выходе потребитель пересоздаётся сразу после этого
+события. Фильтр по правам работает на снимке сервера в памяти сессии (все
+каналы, роли, свой участник), который обновляется самими событиями; изменения
+видимости превращаются в `CHANNEL_CREATE`/`CHANNEL_DELETE`. RESUME работает из
+буфера кадров на той же ноде в течение 2 минут после обрыва. Подробности и
+причины: ADR-0016. Presence получают только друзья и участники общих серверов
+(после шага 5).
 
 ## Модель данных (целевая)
 
@@ -80,6 +85,11 @@ attachments, read_states, relationships, invites, calls, outbox
 Шаг 4c-2: модуль `internal/message` с таблицей `messages` (ADR-0015). Права на
 канал он получает от guild и social через интерфейсы, а сообщения удаляются
 вместе с каналом через `hooks.ChannelsDeleted`.
+
+Шаг 5a: модуль `internal/gateway` (ADR-0016). Читает guild (`Snapshots`,
+`Snapshot`), social (лички и связи) и auth (тикеты, `SessionActive`) через
+интерфейсы; своих таблиц нет. Отзыв сессии входа пишет в outbox внутреннее
+событие `SESSION_REVOKE`.
 
 ## Права
 
