@@ -82,9 +82,12 @@ username; email уникален без учёта регистра.
 | `PUT /guilds/{id}/members/{user_id}/roles/{role_id}` | — | 204 | можете выдать роль и выше участника (или это вы) |
 | `DELETE /guilds/{id}/members/{user_id}/roles/{role_id}` | — | 204 | то же |
 
-Полный сервер: `{id, name, owner_id, created_at, roles, channels, member, permissions}`,
+Полный сервер: `{id, name, owner_id, created_at, roles, channels, member, permissions, channel_permissions}`,
 где `channels` только видимые вам, `member` ваше участие (с `user`), `permissions` ваши
-права на уровне сервера (без переопределений каналов).
+права на уровне сервера, `channel_permissions` — `{channel_id: права}` для каждого
+канала из `channels` с учётом переопределений. Права считает сервер
+(`internal/perm`); клиент только проверяет биты, например «показывать поле
+ввода» = `SEND_MESSAGES` в `channel_permissions[id]` (ADR-0017).
 
 Канал: `{id, guild_id, type, name, topic?, parent_id?, position, user_limit?, bitrate?, permission_overwrites}`.
 Типы: 0 текст, 2 голос, 4 категория. `user_limit` (0–99) и `bitrate` (8000–384000,
@@ -276,6 +279,7 @@ Heartbeat нужно слать каждые `heartbeat_interval` (30 с); бе�
 | `GUILD_UPDATE`, `GUILD_DELETE` | участникам |
 | `CHANNEL_CREATE/UPDATE/DELETE` сервера | тем, кто видит канал. Если изменение ролей, переопределений или владельца открыло канал, приходит `CHANNEL_CREATE`, если скрыло — `CHANNEL_DELETE {id, guild_id}` |
 | `GUILD_ROLE_*`, `GUILD_MEMBER_*` | участникам |
+| `GUILD_PERMISSIONS_UPDATE {guild_id, permissions, channel_permissions}` | вам, когда изменились ваши права на сервере (роли, переопределения, своё участие, владелец, новый или удалённый видимый канал). Полностью заменяет оба поля; приходит после событий, которые его вызвали |
 | `INVITE_CREATE/DELETE` | участникам с `MANAGE_GUILD` |
 | `MESSAGE_*` в канале сервера | тем, кто видит канал (`VIEW_CHANNEL`) |
 | `MESSAGE_*` в личке, `CHANNEL_*` личек, `CHANNEL_RECIPIENT_*` | участникам лички |
@@ -285,5 +289,5 @@ Heartbeat нужно слать каждые `heartbeat_interval` (30 с); бе�
 после IDENTIFY личные события (связи, лички, `GUILD_CREATE`) и сообщения,
 случившиеся во время загрузки READY, могут прийти ещё раз. Изменения серверов,
 уже вошедшие в READY, повторно не приходят. Свой `GUILD_MEMBER_ADD` при входе на сервер не приходит: вы уже есть в
-`GUILD_CREATE`. После смены ролей поле `permissions` сервера клиент
-пересчитывает сам из ролей (`GUILD_ROLE_*`, свой `GUILD_MEMBER_UPDATE`).
+`GUILD_CREATE`. Права никогда не пересчитываются на клиенте: актуальные
+значения приходят в `GUILD_PERMISSIONS_UPDATE`.

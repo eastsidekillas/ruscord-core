@@ -52,6 +52,17 @@ func TestSnapshots(t *testing.T) {
 		t.Fatalf("Full from snapshot differs from REST:\n got %s\nwant %s", got, want)
 	}
 
+	// Permissions in every visible channel, none for the hidden one.
+	restCP := obj(bob.Expect(http.StatusOK, "GET", "/api/v1/guilds/"+first, nil))["channel_permissions"]
+	if cp := obj(restCP); len(cp) != 2 || cp[str(secret["id"])] != nil {
+		t.Fatalf("channel_permissions = %v, want the two public channels only", restCP)
+	}
+	for id, p := range view.Channels {
+		if obj(restCP)[id.String()] != permStr(p) {
+			t.Fatalf("channel %s: REST %v, view %v", id, obj(restCP)[id.String()], p)
+		}
+	}
+
 	// The cursor marks the newest event of the guild the snapshot contains.
 	var latest int64
 	if err := e.PG.QueryRow(t.Context(), `SELECT max(id) FROM outbox WHERE topic = $1`, "guild."+first).Scan(&latest); err != nil {

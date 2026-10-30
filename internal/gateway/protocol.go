@@ -26,6 +26,9 @@ const (
 const (
 	typeReady   = "READY"
 	typeResumed = "RESUMED"
+	// typePermissionsUpdate carries recomputed permissions after a change
+	// of roles, overwrites, the own member or the owner.
+	typePermissionsUpdate = "GUILD_PERMISSIONS_UPDATE"
 )
 
 // Close codes. What the client does next depends on the code; docs/api.md

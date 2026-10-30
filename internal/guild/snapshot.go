@@ -2,6 +2,7 @@ package guild
 
 import (
 	"context"
+	"maps"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -58,7 +59,13 @@ func (s Snapshot) Full(v View) Full {
 		}
 	}
 	m := s.Member
-	return Full{Guild: s.Guild, Roles: s.Roles, Channels: visible, Member: &m, Permissions: v.Base}
+	return Full{Guild: s.Guild, Roles: s.Roles, Channels: visible, Member: &m, Permissions: v.Base,
+		ChannelPermissions: maps.Clone(v.Channels)}
+}
+
+// Equal reports whether two views grant the same permissions everywhere.
+func (v View) Equal(o View) bool {
+	return v.Base == o.Base && maps.Equal(v.Channels, o.Channels)
 }
 
 // Snapshots returns every guild userID is a member of, in join order.

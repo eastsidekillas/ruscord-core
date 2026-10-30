@@ -78,6 +78,10 @@ type Full struct {
 	Channels    []Channel        `json:"channels"`
 	Member      *Member          `json:"member"`
 	Permissions perm.Permissions `json:"permissions"`
+	// ChannelPermissions are the member's permissions in each channel of
+	// Channels, computed by internal/perm, so clients never reimplement the
+	// rules (docs/adr/0017-client-permissions.md).
+	ChannelPermissions map[uuid.UUID]perm.Permissions `json:"channel_permissions"`
 }
 
 func (o Overwrite) perm() perm.Overwrite {
