@@ -102,6 +102,20 @@ jobs:
           curl -fsS -o /dev/null http://127.0.0.1:8080$icon
           curl -fsS -b jar2 $api/users/$(curl -fsS -b jar $api/users/@me | jq -r .id)/profile | jq -e ".user.avatar == \"$avatar\"" >/dev/null
           test "$(curl -s -o /dev/null -w '%{http_code}' -b jar -X PUT --data-binary '<svg/>' $api/users/@me/avatar)" = 422
+      - name: metrics are served on their own port
+        run: |
+          curl -fsS http://127.0.0.1:9090/metrics | grep -q 'ruscord_http_requests_total{route="POST /api/v1/auth/register"'
+          curl -fsS http://127.0.0.1:9090/metrics | grep -q '^ruscord_outbox_backlog '
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/metrics)" = 404
+      - name: back up, then restore into a check database
+        run: |
+          ./scripts/backup.sh /tmp/rb
+          ls /tmp/rb/files/avatars/*/*.png /tmp/rb/files/icons/*/*.png
+          ./scripts/restore.sh "$(ls -d /tmp/rb/????????T??????Z)" ruscord_check
+          q() { docker compose --env-file .env -f deploy/docker-compose.yml exec -T postgres psql -U ruscord -d "$1" -Atc "$2"; }
+          for t in users guilds messages relationships; do
+            test "$(q ruscord "select count(*) from $t")" = "$(q ruscord_check "select count(*) from $t")"
+          done
       - name: outbox events reach JetStream
         run: |
           for i in $(seq 1 10); do

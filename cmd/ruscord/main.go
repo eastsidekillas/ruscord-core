@@ -1,8 +1,10 @@
 // Command ruscord runs the Ruscord core. One binary hosts every module
 // (api, gateway, voice); RUSCORD_ROLES selects which of them this process runs.
 //
-//	ruscord           run the server
-//	ruscord migrate   apply database migrations and exit
+//	ruscord                     run the server
+//	ruscord migrate             apply database migrations and exit
+//	ruscord files-backup DIR    copy stored files (S3) into DIR, new ones only
+//	ruscord files-restore DIR   upload the files in DIR back to S3
 package main
 
 import (
@@ -30,6 +32,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/logx"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/metrics"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/store"
 	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
@@ -59,6 +62,10 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if len(os.Args) == 3 && (os.Args[1] == "files-backup" || os.Args[1] == "files-restore") {
+		return filesCommand(ctx, cfg, log, os.Args[1], os.Args[2])
+	}
+
 	clients, err := store.Open(ctx, store.Options{
 		PostgresURL:   cfg.PostgresURL,
 		RedisAddr:     cfg.RedisAddr,
@@ -82,6 +89,21 @@ func run() error {
 	}
 
 	mux := http.NewServeMux()
+	reg := metrics.NewRegistry()
+	reg.Runtime(version, log)
+	gauge := func(name, help, query string) {
+		reg.GaugeFunc(name, help, log, func(ctx context.Context) (float64, error) {
+			var v float64
+			err := clients.PG.QueryRow(ctx, query).Scan(&v)
+			return v, err
+		})
+	}
+	gauge("ruscord_outbox_backlog", "Outbox events not yet published to NATS.",
+		`SELECT count(*) FROM outbox WHERE published_at IS NULL`)
+	gauge("ruscord_outbox_oldest_age_seconds", "Age of the oldest unpublished outbox event; 0 when none.",
+		`SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(created_at)), 0) FROM outbox WHERE published_at IS NULL`)
+	gauge("ruscord_blob_garbage_due", "Stored files due for the collector.",
+		`SELECT count(*) FROM blob_garbage WHERE delete_after <= now()`)
 
 	hc := health.New(2*time.Second, cfg.IsDev())
 	hc.Add("postgres", func(ctx context.Context) error { return clients.PG.Ping(ctx) })
@@ -141,6 +163,7 @@ func run() error {
 			guilds.WithFiles(files)
 		}
 		socials := social.NewService(clients.PG, svc, guilds, limiter)
+		svc.OnAccountDeleted(guilds, socials)
 		eph := events.NewEphemeral(clients.NATS)
 		gwOpts := gateway.Options{AllowedOrigins: cfg.AllowedOrigins}
 		pres := presence.NewService(clients.Redis, eph, guilds, gateway.PresenceTTL(gwOpts))
@@ -163,6 +186,7 @@ func run() error {
 			if files != nil {
 				go files.Run(ctx, time.Minute)
 			}
+			go svc.RunAccountCleanup(ctx, time.Minute)
 		}
 		if cfg.Has(config.RoleGateway) {
 			gw, err := gateway.New(ctx, gateway.Deps{Auth: svc, Guilds: guilds, Social: socials, Presence: pres,
@@ -171,10 +195,41 @@ func run() error {
 				return err
 			}
 			gw.Register(mux)
+			reg.GaugeFunc("ruscord_gateway_sessions", "Gateway sessions on this node, attached or waiting for RESUME.", log,
+				func(context.Context) (float64, error) { return float64(gw.SessionCount()), nil })
 			go gw.Run(ctx)
 		}
 	}
 
-	handler := httpx.Recover(httpx.CheckOrigin(cfg.AllowedOrigins, mux))
+	if cfg.MetricsAddr != "off" {
+		mm := http.NewServeMux()
+		mm.Handle("GET /metrics", reg.Handler())
+		go func() {
+			if err := httpx.Run(ctx, log, cfg.MetricsAddr, mm, cfg.ShutdownTimeout); err != nil {
+				log.Error("metrics server", "err", err)
+			}
+		}()
+	}
+
+	// metrics.HTTP sits right around the mux: it reads the matched pattern,
+	// which the mux sets on the request it is given.
+	handler := httpx.Recover(httpx.TrustProxies(cfg.TrustedProxies, httpx.CheckOrigin(cfg.AllowedOrigins, metrics.HTTP(reg, mux))))
 	return httpx.Run(ctx, log, cfg.HTTPAddr, handler, cfg.ShutdownTimeout)
+}
+
+// filesCommand backs up or restores stored files (scripts/backup.sh).
+func filesCommand(ctx context.Context, cfg config.Config, log *slog.Logger, cmd, dir string) error {
+	if !cfg.FilesEnabled() {
+		return errors.New("RUSCORD_S3_ACCESS_KEY is not set")
+	}
+	s3 := blob.NewS3(blob.S3Config{Endpoint: cfg.S3Endpoint, Region: cfg.S3Region, Bucket: cfg.S3Bucket,
+		AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey})
+	if cmd == "files-restore" {
+		n, err := blob.Restore(ctx, s3, dir)
+		log.Info("files restored", "files", n, "from", dir)
+		return err
+	}
+	copied, skipped, err := blob.Backup(ctx, s3, dir)
+	log.Info("files backed up", "copied", copied, "already there", skipped, "to", dir)
+	return err
 }

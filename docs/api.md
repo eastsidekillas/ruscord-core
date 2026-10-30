@@ -43,10 +43,17 @@ origin задаёт `RUSCORD_ALLOWED_ORIGINS`.
 | `PUT /users/@me/avatar` | картинка (тело запроса) | 200, пользователь | 401, 413, 422, 429, 503 |
 | `DELETE /users/@me/avatar` | — | 200, пользователь | 401, 429 |
 | `GET /users/{id}/profile` | — | 200, `{user, bio}` | 401, 404 |
+| `DELETE /users/@me` | `{password}` | 204, стирает cookie | 401, 403 `wrong_password`, 400 `owns_guilds`, 429 |
 
 Пользователь: `{id, email, username, display_name, created_at, status, avatar, bio}`.
 Публичный пользователь (в участниках, связях, личках, профиле):
-`{id, username, display_name, avatar}`.
+`{id, username, display_name, avatar, deleted?}`. У удалённого аккаунта
+`deleted: true`, `display_name` «Удалённый пользователь», без имени и аватара.
+
+Удаление аккаунта (ADR-0021): пароль ещё раз; владелец серверов сначала
+удаляет их. Сразу закрываются все сессии и сокеты; аккаунт выходит из
+серверов, групп и друзей; переписки и сообщения остаются от «удалённого
+пользователя». 5 попыток в час.
 
 `PATCH /users/@me` меняет только переданные поля (`null` = не передано), нужно
 хотя бы одно: `display_name` 1–32 символа, `bio` («о себе») до 190 символов,
@@ -83,7 +90,7 @@ origin задаёт `RUSCORD_ALLOWED_ORIGINS`.
 умолчанию равен `username`; `password` от 8 до 128 символов и не равен email или
 username; email уникален без учёта регистра.
 
-Лимиты: вход 20/мин с IP и 5/мин на email, регистрация 5/час с IP, refresh
+Лимиты: вход 20/мин с IP и 5/мин на email, регистрация 5/час с IP (за прокси — адрес клиента, ADR-0020), refresh
 30/мин на сессию, тикеты 30/мин на сессию.
 
 ## Серверы, каналы, роли, участники
@@ -117,6 +124,9 @@ username; email уникален без учёта регистра.
 | `PATCH /guilds/{id}/members/@me` | `{nick}` (`null` или `""` сбрасывает) | 204 | `CHANGE_NICKNAME` |
 | `DELETE /guilds/{id}/members/@me` | — | 204, выход с сервера | владелец не может выйти (400 `owner_cannot_leave`) |
 | `DELETE /guilds/{id}/members/{user_id}` | — | 204, кик | `KICK_MEMBERS` и ваша высшая роль выше |
+| `PUT /guilds/{id}/bans/{user_id}` | `{reason?}` (до 512) или без тела | 204, бан; участник выходит с сервера | `BAN_MEMBERS` и ваша высшая роль выше (если участник); себя — 400 |
+| `DELETE /guilds/{id}/bans/{user_id}` | — | 204 | `BAN_MEMBERS` |
+| `GET /guilds/{id}/bans` | — | 200, `[{user_id, user, reason, moderator_id, created_at}]`, новые первыми | `BAN_MEMBERS` |
 | `PUT /guilds/{id}/members/{user_id}/roles/{role_id}` | — | 204 | можете выдать роль и выше участника (или это вы) |
 | `DELETE /guilds/{id}/members/{user_id}/roles/{role_id}` | — | 204 | то же |
 

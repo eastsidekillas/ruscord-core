@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -252,4 +254,59 @@ func TestCollectorSkipsReuploaded(t *testing.T) {
 	if !slices.Contains(store.Keys(), key) || rowsLeft(t, c) != 0 {
 		t.Fatal("a referenced object must be kept and its row cleared")
 	}
+}
+
+func TestBackupRestore(t *testing.T) {
+	for name, store := range map[string]Store{"memory": NewMemory(), "s3": newBucket(t)} {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			owner := uuid.New()
+			keys := []string{Key(KindAvatar, owner, []byte("a"), ExtPNG), Key(KindIcon, owner, []byte("b"), ExtJPEG)}
+			for i, k := range keys {
+				if err := store.Put(ctx, k, []byte{byte('a' + i)}, "x"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dir := t.TempDir()
+			if c, s, err := Backup(ctx, store, dir); err != nil || c != 2 || s != 0 {
+				t.Fatalf("first backup: %d copied, %d skipped, %v", c, s, err)
+			}
+			// Content-addressed: a second run copies only what is new.
+			third := Key(KindAvatar, owner, []byte("c"), ExtPNG)
+			_ = store.Put(ctx, third, []byte("c"), "x")
+			if c, s, err := Backup(ctx, store, dir); err != nil || c != 1 || s != 2 {
+				t.Fatalf("second backup: %d copied, %d skipped, %v", c, s, err)
+			}
+			// A key outside the pipeline's shape is never written as a path.
+			_ = store.Put(ctx, "../escape.png", []byte("x"), "x")
+			if _, _, err := Backup(ctx, store, dir); err == nil {
+				t.Fatal("an unexpected key must be reported")
+			}
+			if _, err := os.Stat(filepath.Join(dir, "..", "escape.png")); err == nil {
+				t.Fatal("a key escaped the backup directory")
+			}
+			// Restore into an empty store brings back every file.
+			_ = os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("x"), 0o600)
+			fresh := NewMemory()
+			if n, err := Restore(ctx, fresh, dir); err != nil || n != 3 {
+				t.Fatalf("restore: %d, %v", n, err)
+			}
+			for _, k := range append(keys, third) {
+				want, _ := store.Get(ctx, k)
+				if got, err := fresh.Get(ctx, k); err != nil || string(got) != string(want) {
+					t.Fatalf("restored %s = %q, %v", k, got, err)
+				}
+			}
+		})
+	}
+}
+
+// newBucket is an S3 store with its bucket created.
+func newBucket(t *testing.T) *S3 {
+	t.Helper()
+	s := newS3(t)
+	if err := s.EnsureBucket(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return s
 }

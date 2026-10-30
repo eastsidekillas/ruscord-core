@@ -102,6 +102,19 @@ func TestLoadS3KeysComeInPairs(t *testing.T) {
 	}
 }
 
+func TestLoadTrustedProxies(t *testing.T) {
+	c, err := load(env(map[string]string{"RUSCORD_TRUSTED_PROXIES": " 10.0.0.0/8, 172.18.0.3 ,::1"}))
+	if err != nil || len(c.TrustedProxies) != 3 || c.TrustedProxies[1].String() != "172.18.0.3/32" || c.TrustedProxies[2].String() != "::1/128" {
+		t.Fatalf("parsed %v, %v", c.TrustedProxies, err)
+	}
+	if _, err := load(env(map[string]string{"RUSCORD_TRUSTED_PROXIES": "nginx"})); err == nil {
+		t.Fatal("a host name must be rejected")
+	}
+	if c, _ := load(env(nil)); len(c.TrustedProxies) != 0 {
+		t.Fatal("no proxies are trusted by default")
+	}
+}
+
 func TestLoadRejectsUnknownEnv(t *testing.T) {
 	if _, err := load(env(map[string]string{"RUSCORD_ENV": "production"})); err == nil {
 		t.Fatal("expected error for unknown env")
