@@ -374,3 +374,41 @@ func TestOverwritesGoWithRoleAndMember(t *testing.T) {
 func TestRoutesRegister(t *testing.T) {
 	NewHandler(&Service{}, func(h http.Handler) http.Handler { return h }).Register(http.NewServeMux())
 }
+
+// Deleting a category moves its channels out of it, and everyone is told:
+// a CHANNEL_UPDATE per channel, after the CHANNEL_DELETE.
+func TestDeleteCategoryReleasesChannels(t *testing.T) {
+	e := newEnv(t)
+	owner := e.User("owner")
+	gid, _, _ := createGuild(owner)
+	g := "/api/v1/guilds/" + gid
+	cat := str(obj(owner.Expect(http.StatusCreated, "POST", g+"/channels", map[string]any{"type": 4, "name": "Раздел"}))["id"])
+	var inside []string
+	for _, name := range []string{"a", "b"} {
+		inside = append(inside, str(obj(owner.Expect(http.StatusCreated, "POST", g+"/channels",
+			map[string]any{"type": 0, "name": name, "parent_id": cat}))["id"]))
+	}
+	before := len(e.Outbox("CHANNEL_UPDATE"))
+	owner.Expect(http.StatusNoContent, "DELETE", "/api/v1/channels/"+cat, nil)
+
+	for _, ch := range list(owner.Expect(http.StatusOK, "GET", g+"/channels", nil)) {
+		if obj(ch)["parent_id"] != nil {
+			t.Fatalf("a channel still points at the deleted category: %v", ch)
+		}
+	}
+	updates := e.Outbox("CHANNEL_UPDATE")[before:]
+	got := map[string]bool{}
+	for _, u := range updates {
+		if _, has := u.Data["parent_id"]; has || u.Topic != "guild."+gid {
+			t.Fatalf("update %v", u)
+		}
+		got[str(u.Data["id"])] = true
+	}
+	if len(got) != 2 || !got[inside[0]] || !got[inside[1]] {
+		t.Fatalf("updates for %v, want %v", got, inside)
+	}
+	types := e.OutboxTypes()
+	if types[len(types)-3] != "CHANNEL_DELETE" {
+		t.Fatalf("the delete must come first: %v", types[len(types)-3:])
+	}
+}

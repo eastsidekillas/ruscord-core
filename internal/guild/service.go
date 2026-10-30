@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -480,13 +481,35 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 		if err := s.channelsDeleted.Run(ctx, tx, []uuid.UUID{ch.ID}); err != nil {
 			return err
 		}
+		rows, err := tx.Query(ctx, `SELECT id FROM channels WHERE parent_id = $1`, ch.ID)
+		if err != nil {
+			return err
+		}
+		children, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM channels WHERE id = $1`, ch.ID); err != nil {
 			return err
 		}
-		return events.Write(ctx, tx, events.Event{
+		evs := []events.Event{{
 			Topic: events.GuildTopic(ch.GuildID), Type: events.ChannelDelete,
 			Data: map[string]any{"id": ch.ID, "guild_id": ch.GuildID},
-		})
+		}}
+		if ch.Type == ChannelCategory {
+			// The database moved the category's channels out of it
+			// (ON DELETE SET NULL); clients and gateway snapshots learn it here.
+			rest, err := listChannels(ctx, tx, ch.GuildID)
+			if err != nil {
+				return err
+			}
+			for _, c := range rest {
+				if c.ParentID == nil && slices.Contains(children, c.ID) {
+					evs = append(evs, events.Event{Topic: events.GuildTopic(c.GuildID), Type: events.ChannelUpdate, Data: c})
+				}
+			}
+		}
+		return events.Write(ctx, tx, evs...)
 	})
 }
 
