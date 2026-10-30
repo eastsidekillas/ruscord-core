@@ -66,7 +66,7 @@ func TestQueryParams(t *testing.T) {
 func TestReadBody(t *testing.T) {
 	read := func(body string, limit int64) (int, string) {
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodPut, "/", strings.NewReader(body))
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/", strings.NewReader(body))
 		b, err := ReadBody(w, r, limit)
 		if err != nil {
 			var e *Error

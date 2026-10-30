@@ -98,7 +98,7 @@ func TestHandler(t *testing.T) {
 	key := Key(KindIcon, uuid.New(), []byte("png bytes"), ExtPNG)
 	_ = store.Put(t.Context(), key, []byte("png bytes"), "image/png")
 
-	get := func(path string) *http.Response {
+	get := func(path string) (int, http.Header) {
 		t.Helper()
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+path, nil)
 		resp, err := http.DefaultClient.Do(req)
@@ -106,14 +106,14 @@ func TestHandler(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = resp.Body.Close()
-		return resp
+		return resp.StatusCode, resp.Header
 	}
-	resp := get("/cdn/" + key)
-	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/png" ||
-		resp.Header.Get("X-Content-Type-Options") != "nosniff" ||
-		!strings.Contains(resp.Header.Get("Content-Security-Policy"), "sandbox") ||
-		!strings.Contains(resp.Header.Get("Cache-Control"), "immutable") {
-		t.Fatalf("served: %d %v", resp.StatusCode, resp.Header)
+	code, h := get("/cdn/" + key)
+	if code != 200 || h.Get("Content-Type") != "image/png" ||
+		h.Get("X-Content-Type-Options") != "nosniff" ||
+		!strings.Contains(h.Get("Content-Security-Policy"), "sandbox") ||
+		!strings.Contains(h.Get("Cache-Control"), "immutable") {
+		t.Fatalf("served: %d %v", code, h)
 	}
 	for _, path := range []string{
 		"/cdn/" + Key(KindIcon, uuid.New(), []byte("missing"), ExtPNG),
@@ -121,8 +121,8 @@ func TestHandler(t *testing.T) {
 		"/cdn/%2e%2e/%2e%2e/etc/passwd",
 		"/cdn/avatars/x",
 	} {
-		if resp := get(path); resp.StatusCode != http.StatusNotFound {
-			t.Errorf("GET %s: %d, want 404", path, resp.StatusCode)
+		if code, _ := get(path); code != http.StatusNotFound {
+			t.Errorf("GET %s: %d, want 404", path, code)
 		}
 	}
 }

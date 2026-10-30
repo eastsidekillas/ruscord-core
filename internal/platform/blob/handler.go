@@ -39,6 +39,6 @@ func Register(mux *http.ServeMux, store Store, log *slog.Logger) {
 		h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
 		h.Set("Cross-Origin-Resource-Policy", "cross-origin")
 		h.Set("Cache-Control", "public, max-age=31536000, immutable")
-		_, _ = w.Write(body)
+		_, _ = w.Write(body) //nolint:gosec // G705: written by the image pipeline and served inert (fixed type, nosniff, sandbox CSP)
 	})
 }
