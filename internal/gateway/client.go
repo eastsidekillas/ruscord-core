@@ -70,7 +70,7 @@ func (cl *client) run(ctx context.Context, version string) {
 		switch f.Op {
 		case opHeartbeat:
 			var seq *uint64
-			if json.Unmarshal(f.D, &seq) != nil {
+			if len(f.D) > 0 && json.Unmarshal(f.D, &seq) != nil { // a missing d means null
 				c.kick(closeDecodeError, "invalid heartbeat")
 				continue
 			}
@@ -151,7 +151,7 @@ func (cl *client) identify(ctx context.Context, d identifyData) (websocket.Statu
 	if code != 0 {
 		return code, "authentication failed"
 	}
-	if !s.reserve(p.UserID) {
+	if !s.reserve(p.UserID) && !(s.evictDetached(p.UserID) && s.reserve(p.UserID)) {
 		return closeTooManySessions, "too many sessions"
 	}
 	ss, err := s.start(ctx, p, cl.c)

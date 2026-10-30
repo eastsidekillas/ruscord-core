@@ -71,7 +71,11 @@ func (c *conn) writeLoop(ctx context.Context) {
 			if c.code != closeSlowConsumer {
 				c.flush(ctx)
 			}
-			_ = c.ws.Close(c.code, c.reason)
+			if c.ws.Close(c.code, c.reason) != nil {
+				// e.g. a code that may not be sent, echoed from the client
+				// (1005); make sure the socket is gone anyway.
+				_ = c.ws.CloseNow()
+			}
 			return
 		}
 	}

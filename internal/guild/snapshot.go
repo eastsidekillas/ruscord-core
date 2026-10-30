@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/slicex"
 )
@@ -19,6 +20,12 @@ type Snapshot struct {
 	Roles    []Role
 	Channels []Channel
 	Member   Member
+	// Cursor is the id of the newest outbox event of the guild's topic that
+	// the snapshot already contains. Every state change of a guild is written
+	// under its lock, so ids up to Cursor are exactly the changes the
+	// snapshot includes and must not be applied again (messages excepted:
+	// they are written without the lock and change no state).
+	Cursor int64
 }
 
 // View is what the member of a Snapshot may do.
@@ -106,9 +113,18 @@ func (s *Service) snapshots(ctx context.Context, userID uuid.UUID, only *uuid.UU
 		if err != nil {
 			return err
 		}
+		topics := make([]string, len(ids))
+		for i, id := range ids {
+			topics[i] = events.GuildTopic(id)
+		}
+		cursors, err := events.LatestIDs(ctx, tx, topics)
+		if err != nil {
+			return err
+		}
 		out = make([]Snapshot, 0, len(members))
 		for _, m := range members {
-			out = append(out, Snapshot{Guild: guilds[m.GuildID], Roles: roles[m.GuildID], Channels: channels[m.GuildID], Member: m})
+			out = append(out, Snapshot{Guild: guilds[m.GuildID], Roles: roles[m.GuildID], Channels: channels[m.GuildID],
+				Member: m, Cursor: cursors[events.GuildTopic(m.GuildID)]})
 		}
 		return nil
 	})

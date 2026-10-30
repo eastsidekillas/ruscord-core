@@ -180,6 +180,31 @@ func (s *Server) reserve(user uuid.UUID) bool {
 	return true
 }
 
+// evictDetached ends the user's session that has been detached longest, to
+// make room under the cap: a client that crashes and identifies anew must
+// not be locked out by its own abandoned sessions. It reports whether one
+// was ended.
+func (s *Server) evictDetached(user uuid.UUID) bool {
+	var oldest *session
+	var since time.Time
+	for _, ss := range s.snapshot() {
+		if ss.principal.UserID != user {
+			continue
+		}
+		ss.mu.Lock()
+		detached, at := ss.conn == nil && !ss.ended, ss.detachedAt
+		ss.mu.Unlock()
+		if detached && (oldest == nil || at.Before(since)) {
+			oldest, since = ss, at
+		}
+	}
+	if oldest == nil {
+		return false
+	}
+	oldest.end(0, "")
+	return true
+}
+
 func (s *Server) release(user uuid.UUID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

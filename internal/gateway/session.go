@@ -2,8 +2,11 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime/debug"
+	"strconv"
 	"sync"
 	"time"
 
@@ -101,8 +104,11 @@ func (s *session) expired(now time.Time, window time.Duration) bool {
 	return s.conn == nil && !s.detachedAt.IsZero() && now.Sub(s.detachedAt) > window
 }
 
-// end stops the session for good and closes its connection with code (if
-// code is not 0). Safe to call more than once.
+// end stops the session for good and closes its connection, if one is
+// attached, with code. Code 0 means the caller expected no connection (an
+// expired or evicted session); one that attached in the meantime is closed
+// with 4006 rather than left open on a session that no longer delivers.
+// Safe to call more than once.
 func (s *session) end(code websocket.StatusCode, reason string) {
 	s.mu.Lock()
 	if s.ended {
@@ -115,7 +121,10 @@ func (s *session) end(code websocket.StatusCode, reason string) {
 	s.mu.Unlock()
 
 	s.cancel()
-	if c != nil && code != 0 {
+	if c != nil {
+		if code == 0 {
+			code, reason = closeSessionInvalid, "session ended"
+		}
 		c.kick(code, reason)
 	}
 	s.srv.forget(s)
@@ -126,6 +135,13 @@ func (s *session) end(code websocket.StatusCode, reason string) {
 // change of topics, right after the event that caused it, so a guild's
 // events start exactly after GUILD_CREATE and stop exactly at GUILD_DELETE.
 func (s *session) pump(ctx context.Context, r *router, next uint64) {
+	// A bug in one session must not take the whole node down.
+	defer func() {
+		if v := recover(); v != nil {
+			s.srv.log.Error("gateway session panicked", "user_id", s.principal.UserID, "panic", v, "stack", string(debug.Stack()))
+			s.end(closeUnknownError, "internal error")
+		}
+	}()
 	for {
 		var err error
 		next, err = s.consume(ctx, r, next)
@@ -174,7 +190,15 @@ func (s *session) consume(ctx context.Context, r *router, next uint64) (uint64, 
 		if err != nil {
 			return next, fmt.Errorf("metadata: %w", err)
 		}
-		res, err := r.route(ctx, event{Subject: msg.Subject(), Type: msg.Headers().Get(events.HeaderType), Data: msg.Data()})
+		next = meta.Sequence.Stream + 1
+		if !json.Valid(msg.Data()) {
+			// The relay only publishes JSON from the outbox; anything else is
+			// not ours to forward.
+			s.srv.log.Warn("gateway: skipping event with invalid JSON", "subject", msg.Subject(), "seq", meta.Sequence.Stream)
+			continue
+		}
+		id, _ := strconv.ParseInt(msg.Headers().Get(jetstream.MsgIDHeader), 10, 64) // 0 if absent
+		res, err := r.route(ctx, event{Subject: msg.Subject(), Type: msg.Headers().Get(events.HeaderType), Data: msg.Data(), ID: id})
 		if err != nil {
 			return next, err
 		}
@@ -182,7 +206,6 @@ func (s *session) consume(ctx context.Context, r *router, next uint64) (uint64, 
 			return next, errRevoked
 		}
 		s.emit(res.out)
-		next = meta.Sequence.Stream + 1
 		if res.resubscribe {
 			return next, nil
 		}
