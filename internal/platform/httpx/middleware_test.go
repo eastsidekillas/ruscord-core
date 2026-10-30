@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -65,8 +66,8 @@ func TestRecover(t *testing.T) {
 		t.Fatalf("panic answered %d %+v", w.Code, body)
 	}
 	defer func() {
-		if v := recover(); v != http.ErrAbortHandler {
-			t.Fatalf("ErrAbortHandler must propagate, got %v", v)
+		if err, _ := recover().(error); !errors.Is(err, http.ErrAbortHandler) {
+			t.Fatalf("ErrAbortHandler must propagate, got %v", err)
 		}
 	}()
 	Recover(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) })).
