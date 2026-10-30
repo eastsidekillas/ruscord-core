@@ -15,10 +15,13 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/presence"
 )
 
-// GuildIDs lists the guilds a user is in; guild.Service implements it. A
-// change of what others see of the user (name, avatar) goes to each of them.
+// GuildIDs is what auth needs from the guild module; guild.Service
+// implements it. A change of what others see of the user (name, avatar)
+// goes to each of their guilds; an account that owns guilds cannot be
+// deleted until they are deleted.
 type GuildIDs interface {
 	GuildIDs(ctx context.Context, user uuid.UUID) ([]uuid.UUID, error)
+	OwnedGuildCount(ctx context.Context, user uuid.UUID) (int, error)
 }
 
 // SetGuildIDs connects the guild module for the profile fan-out. It is set
@@ -123,7 +126,7 @@ func (s *Service) change(ctx context.Context, id uuid.UUID, apply func(tx pgx.Tx
 	var u User
 	err := pgx.BeginFunc(ctx, s.store.pg, func(tx pgx.Tx) error {
 		var cur current
-		err := tx.QueryRow(ctx, `SELECT display_name, avatar FROM users WHERE id = $1 FOR UPDATE`, id).
+		err := tx.QueryRow(ctx, `SELECT display_name, avatar FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).
 			Scan(&cur.displayName, &cur.avatar)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return httpx.ErrUnauthorized
@@ -157,7 +160,7 @@ func (s *Service) change(ctx context.Context, id uuid.UUID, apply func(tx pgx.Tx
 // Bio returns a user's "about me"; httpx.ErrNotFound for unknown users.
 func (s *Service) Bio(ctx context.Context, id uuid.UUID) (string, error) {
 	var bio string
-	err := s.store.pg.QueryRow(ctx, `SELECT bio FROM users WHERE id = $1`, id).Scan(&bio)
+	err := s.store.pg.QueryRow(ctx, `SELECT CASE WHEN deleted_at IS NULL THEN bio ELSE '' END FROM users WHERE id = $1`, id).Scan(&bio)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", httpx.ErrNotFound
 	}

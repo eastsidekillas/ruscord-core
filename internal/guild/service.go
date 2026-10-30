@@ -850,6 +850,9 @@ func (s *Service) AddMember(ctx context.Context, guildID, userID uuid.UUID) (Ful
 
 // addMember inserts the member and writes the events. The caller holds the guild lock.
 func (s *Service) addMember(ctx context.Context, tx pgx.Tx, guildID, userID uuid.UUID) (Full, error) {
+	if err := checkNotBanned(ctx, tx, guildID, userID); err != nil {
+		return Full{}, err
+	}
 	if err := checkGuildCount(ctx, tx, userID); err != nil {
 		return Full{}, err
 	}
@@ -1009,19 +1012,26 @@ func (s *Service) RemoveMember(ctx context.Context, userID, guildID, targetID uu
 				return httpx.ErrForbidden
 			}
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM members WHERE guild_id = $1 AND user_id = $2`, guildID, targetID); err != nil {
-			return err
-		}
-		if err := dropOverwrites(ctx, tx, guildID, perm.TargetMember, targetID); err != nil {
-			return err
-		}
-		return events.Write(ctx, tx,
-			events.Event{Topic: events.GuildTopic(guildID), Type: events.MemberRemove,
-				Data: map[string]any{"guild_id": guildID, "user_id": targetID}},
-			events.Event{Topic: events.UserTopic(targetID), Type: events.GuildDelete,
-				Data: map[string]any{"id": guildID}},
-		)
+		return dropMember(ctx, tx, guildID, targetID)
 	})
+}
+
+// dropMember takes a member out of the guild: the membership, their channel
+// overwrites, and the events (the guild sees the member go, the user loses
+// the guild). The caller holds the guild lock.
+func dropMember(ctx context.Context, tx pgx.Tx, guildID, userID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM members WHERE guild_id = $1 AND user_id = $2`, guildID, userID); err != nil {
+		return err
+	}
+	if err := dropOverwrites(ctx, tx, guildID, perm.TargetMember, userID); err != nil {
+		return err
+	}
+	return events.Write(ctx, tx,
+		events.Event{Topic: events.GuildTopic(guildID), Type: events.MemberRemove,
+			Data: map[string]any{"guild_id": guildID, "user_id": userID}},
+		events.Event{Topic: events.UserTopic(userID), Type: events.GuildDelete,
+			Data: map[string]any{"id": guildID}},
+	)
 }
 
 type UpdateSelfInput struct {

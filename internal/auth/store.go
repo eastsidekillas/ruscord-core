@@ -96,12 +96,12 @@ func insertSession(ctx context.Context, db execer, sess session, device string, 
 
 func (s *store) userByEmail(ctx context.Context, email string) (User, error) {
 	return scanUser(s.pg.QueryRow(ctx,
-		`SELECT `+userCols+` FROM users WHERE email = $1`, email))
+		`SELECT `+userCols+` FROM users WHERE email = $1 AND deleted_at IS NULL`, email))
 }
 
 func (s *store) userByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return scanUser(s.pg.QueryRow(ctx,
-		`SELECT `+userCols+` FROM users WHERE id = $1`, id))
+		`SELECT `+userCols+` FROM users WHERE id = $1 AND deleted_at IS NULL`, id))
 }
 
 const userCols = `id, email, username, display_name, created_at, status, avatar, bio, password_hash`
