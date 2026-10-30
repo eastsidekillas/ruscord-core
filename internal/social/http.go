@@ -26,6 +26,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"PUT /api/v1/users/@me/relationships/{user}":    h.putRelationship,
 		"DELETE /api/v1/users/@me/relationships/{user}": h.deleteRelationship,
 
+		"GET /api/v1/users/{user}/profile": h.profile,
+
 		"GET /api/v1/users/@me/channels":                      h.listDMs,
 		"POST /api/v1/users/@me/channels":                     h.createDM,
 		"PATCH /api/v1/users/@me/channels/{channel}":          h.renameGroup,

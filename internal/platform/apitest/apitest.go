@@ -4,12 +4,12 @@
 package apitest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/testdb"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
@@ -34,6 +35,10 @@ type Env struct {
 	Mux         *http.ServeMux
 	// Eph records ephemeral events, for modules that publish them.
 	Eph *EphRecorder
+	// Files collects uploaded images kept in Blobs (in memory). Auth has
+	// it; modules with uploads of their own register with it.
+	Files *blob.Collector
+	Blobs *blob.Memory
 
 	srv    *httptest.Server
 	signer *auth.Signer
@@ -49,8 +54,10 @@ func New(t *testing.T) *Env {
 	rdb := redis.NewClient(&redis.Options{Addr: miniredis.RunT(t).Addr()})
 	limiter := ratelimit.New(rdb)
 	signer, _ := auth.NewSigner(make([]byte, 32))
+	blobs := blob.NewMemory()
+	files := blob.NewCollector(pg, blobs, testdb.Logger())
 	authSvc, err := auth.NewService(context.Background(), auth.Deps{
-		PG: pg, Signer: signer, Limiter: limiter, Tickets: auth.NewTickets(rdb),
+		PG: pg, Signer: signer, Limiter: limiter, Tickets: auth.NewTickets(rdb), Files: files,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -58,10 +65,11 @@ func New(t *testing.T) *Env {
 	mux := http.NewServeMux()
 	authHTTP := auth.NewHandler(authSvc, false)
 	authHTTP.Register(mux)
+	blob.Register(mux, blobs, testdb.Logger())
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &Env{T: t, PG: pg, Auth: authSvc, Limiter: limiter, Redis: rdb, RequireAuth: authHTTP.RequireAuth,
-		Mux: mux, Eph: &EphRecorder{}, srv: srv, signer: signer}
+		Mux: mux, Eph: &EphRecorder{}, Files: files, Blobs: blobs, srv: srv, signer: signer}
 }
 
 type User struct {
@@ -103,15 +111,26 @@ func (u *User) Ticket() string {
 
 // Do sends a request and decodes the JSON answer into a generic value.
 func (u *User) Do(method, path string, body any) (int, any) {
-	t := u.Env.T
-	t.Helper()
+	u.Env.T.Helper()
 	var r io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
-		r = strings.NewReader(string(b))
+		r = bytes.NewReader(b)
 	}
+	return u.send(method, path, "application/json", r)
+}
+
+// Upload sends raw bytes (a file upload) and decodes the JSON answer.
+func (u *User) Upload(method, path string, data []byte) (int, any) {
+	u.Env.T.Helper()
+	return u.send(method, path, "application/octet-stream", bytes.NewReader(data))
+}
+
+func (u *User) send(method, path, contentType string, r io.Reader) (int, any) {
+	t := u.Env.T
+	t.Helper()
 	req, _ := http.NewRequestWithContext(t.Context(), method, u.Env.srv.URL+path, r)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	req.AddCookie(&http.Cookie{Name: "rc_at", Value: u.token}) //nolint:gosec // request cookie in a test client
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

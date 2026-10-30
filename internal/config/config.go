@@ -36,6 +36,14 @@ type Config struct {
 	RedisPassword string
 	NATSURL       string
 
+	// S3 stores avatars and icons (ADR-0019). Without keys in dev, uploads
+	// are off (503) and everything else works.
+	S3Endpoint  string
+	S3Region    string
+	S3Bucket    string
+	S3AccessKey string
+	S3SecretKey string
+
 	LiveKitURL       string
 	LiveKitAPIKey    string
 	LiveKitAPISecret string
@@ -80,6 +88,11 @@ func load(getenv func(string) string) (Config, error) {
 		RedisAddr:        get("RUSCORD_REDIS_ADDR", "127.0.0.1:6379"),
 		RedisPassword:    get("RUSCORD_REDIS_PASSWORD", ""),
 		NATSURL:          get("RUSCORD_NATS_URL", "nats://127.0.0.1:4222"),
+		S3Endpoint:       get("RUSCORD_S3_ENDPOINT", "http://127.0.0.1:8333"),
+		S3Region:         get("RUSCORD_S3_REGION", "us-east-1"),
+		S3Bucket:         get("RUSCORD_S3_BUCKET", "ruscord"),
+		S3AccessKey:      get("RUSCORD_S3_ACCESS_KEY", ""),
+		S3SecretKey:      get("RUSCORD_S3_SECRET_KEY", ""),
 		LiveKitURL:       get("RUSCORD_LIVEKIT_URL", "ws://127.0.0.1:7880"),
 		LiveKitAPIKey:    get("RUSCORD_LIVEKIT_API_KEY", ""),
 		LiveKitAPISecret: get("RUSCORD_LIVEKIT_API_SECRET", ""),
@@ -125,6 +138,8 @@ func load(getenv func(string) string) (Config, error) {
 			"RUSCORD_REDIS_PASSWORD":     c.RedisPassword,
 			"RUSCORD_LIVEKIT_API_KEY":    c.LiveKitAPIKey,
 			"RUSCORD_LIVEKIT_API_SECRET": c.LiveKitAPISecret,
+			"RUSCORD_S3_ACCESS_KEY":      c.S3AccessKey,
+			"RUSCORD_S3_SECRET_KEY":      c.S3SecretKey,
 		} {
 			if val == "" {
 				errs = append(errs, fmt.Errorf("%s: required outside dev", key))
@@ -135,8 +150,15 @@ func load(getenv func(string) string) (Config, error) {
 		}
 	}
 
+	if (c.S3AccessKey == "") != (c.S3SecretKey == "") {
+		errs = append(errs, errors.New("RUSCORD_S3_ACCESS_KEY and RUSCORD_S3_SECRET_KEY: set both or neither"))
+	}
+
 	return c, errors.Join(errs...)
 }
+
+// FilesEnabled reports whether S3 credentials are configured.
+func (c Config) FilesEnabled() bool { return c.S3AccessKey != "" }
 
 func parseRoles(s string) ([]Role, error) {
 	if s == "all" {

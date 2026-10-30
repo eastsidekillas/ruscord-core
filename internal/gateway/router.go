@@ -75,12 +75,17 @@ type router struct {
 	// session once per shared guild and once more if a friend; only the
 	// first copy goes out.
 	seen map[uuid.UUID]presence.Status
+	// profiles is the last public profile delivered per user, as sent. One
+	// change reaches the session once per shared guild; only the first
+	// copy goes out.
+	profiles map[uuid.UUID]string
 }
 
 func newRouter(user, authSession uuid.UUID, loader GuildLoader, snaps []guild.Snapshot, dmIDs []uuid.UUID) *router {
 	r := &router{user: user, authSession: authSession, loader: loader,
 		guilds: make(map[uuid.UUID]*guildState, len(snaps)), dms: make(map[uuid.UUID]bool, len(dmIDs)),
-		friends: map[uuid.UUID]bool{}, choice: presence.Online, seen: map[uuid.UUID]presence.Status{}}
+		friends: map[uuid.UUID]bool{}, choice: presence.Online, seen: map[uuid.UUID]presence.Status{},
+		profiles: map[uuid.UUID]string{}}
 	for _, s := range snaps {
 		r.guilds[s.Guild.ID] = newGuildState(s)
 	}
@@ -265,6 +270,12 @@ func (r *router) userEvent(ctx context.Context, ev event) (routed, error) {
 // own dispatches with the new values, so clients never compute permissions
 // (docs/adr/0017-client-permissions.md).
 func (r *router) guildEvent(guildID uuid.UUID, g *guildState, ev event) (routed, error) {
+	if ev.Type == events.UserProfileUpdate {
+		// Written without the guild's lock, so the cursor says nothing
+		// about it (ADR-0019). A copy older than the snapshot can still
+		// arrive; the newer one follows it in the stream.
+		return r.profile(ev), nil
+	}
 	if ev.ID != 0 && ev.ID <= g.snap.Cursor && !isMessage(ev.Type) {
 		return routed{}, nil // the snapshot already has this change
 	}
@@ -510,7 +521,28 @@ func (r *router) routeEphemeral(ev event) routed {
 // changes: a status missed while not sharing a guild would otherwise
 // suppress the next real one. A repeated status is harmless; a suppressed
 // one leaves a person shown in the wrong state.
-func (r *router) forgetSeen() { clear(r.seen) }
+func (r *router) forgetSeen() {
+	clear(r.seen)
+	clear(r.profiles)
+}
+
+// profile delivers a USER_PROFILE_UPDATE unless the same profile of that
+// user was the last delivered.
+func (r *router) profile(ev event) routed {
+	var p struct {
+		User struct {
+			ID uuid.UUID `json:"id"`
+		} `json:"user"`
+	}
+	if json.Unmarshal(ev.Data, &p) != nil || p.User.ID == uuid.Nil {
+		return routed{}
+	}
+	if r.profiles[p.User.ID] == string(ev.Data) {
+		return routed{}
+	}
+	r.profiles[p.User.ID] = string(ev.Data)
+	return forward(ev)
+}
 
 // presence delivers a status unless this one was the last delivered.
 func (r *router) presence(p presence.Update) routed {

@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
@@ -42,7 +43,9 @@ var (
 	ruleRegisterIP = ratelimit.Rule{Name: "register_ip", Limit: 5, Window: time.Hour}
 	ruleRefresh    = ratelimit.Rule{Name: "refresh_session", Limit: 30, Window: time.Minute}
 	ruleTicket     = ratelimit.Rule{Name: "gw_ticket", Limit: 30, Window: time.Minute}
-	ruleStatus     = ratelimit.Rule{Name: "status_change", Limit: 10, Window: time.Minute}
+	ruleProfile    = ratelimit.Rule{Name: "profile_change", Limit: 10, Window: time.Minute}
+	// RuleImageUpload limits avatar and guild icon uploads per user.
+	RuleImageUpload = ratelimit.Rule{Name: "image_upload", Limit: 5, Window: 10 * time.Minute}
 )
 
 type Service struct {
@@ -51,6 +54,8 @@ type Service struct {
 	signer  *Signer
 	limiter *ratelimit.Limiter
 	tickets *Tickets
+	files   *blob.Collector
+	guilds  GuildIDs // for profile fan-out; nil means none
 	now     func() time.Time
 	dummy   string
 }
@@ -60,7 +65,9 @@ type Deps struct {
 	Signer  *Signer
 	Limiter *ratelimit.Limiter
 	Tickets *Tickets
-	Now     func() time.Time // nil means time.Now
+	// Files stores avatars; nil disables avatar uploads (503).
+	Files *blob.Collector
+	Now   func() time.Time // nil means time.Now
 }
 
 func NewService(ctx context.Context, d Deps) (*Service, error) {
@@ -74,7 +81,11 @@ func NewService(ctx context.Context, d Deps) (*Service, error) {
 		signer:  d.Signer,
 		limiter: d.Limiter,
 		tickets: d.Tickets,
+		files:   d.Files,
 		now:     now,
+	}
+	if d.Files != nil {
+		d.Files.Register(blob.KindAvatar, s.avatarInUse)
 	}
 	dummy, err := s.hasher.Hash(ctx, "ruscord-dummy-password")
 	if err != nil {
@@ -325,26 +336,6 @@ func (s *Service) Authenticate(token string) (Principal, error) {
 		return Principal{}, httpx.ErrUnauthorized
 	}
 	return p, nil
-}
-
-// UpdateMeInput is the body of PATCH /users/@me.
-type UpdateMeInput struct {
-	Status *string `json:"status"`
-}
-
-// UpdateMe changes the caller's own settings; for now the chosen status.
-func (s *Service) UpdateMe(ctx context.Context, p Principal, in UpdateMeInput) (User, error) {
-	if in.Status == nil || !presence.ValidChoice(presence.Status(*in.Status)) {
-		return User{}, httpx.Validation(map[string]string{"status": "Одно из: online, idle, dnd, invisible"})
-	}
-	if err := s.limit(ctx, ruleStatus, p.UserID.String()); err != nil {
-		return User{}, err
-	}
-	u, err := s.store.setStatus(ctx, p.UserID, *in.Status)
-	if errors.Is(err, errNotFound) {
-		return User{}, httpx.ErrUnauthorized
-	}
-	return u, err
 }
 
 // SessionActive reports whether a sign-in session is still valid. The gateway

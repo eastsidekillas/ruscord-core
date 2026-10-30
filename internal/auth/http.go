@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/imaging"
 	"github.com/google/uuid"
 )
 
@@ -35,6 +36,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/auth/logout", httpx.Handle(h.logout))
 	mux.Handle("GET /api/v1/users/@me", h.RequireAuth(httpx.Handle(h.me)))
 	mux.Handle("PATCH /api/v1/users/@me", h.RequireAuth(httpx.Handle(h.updateMe)))
+	mux.Handle("PUT /api/v1/users/@me/avatar", h.RequireAuth(httpx.Handle(h.setAvatar)))
+	mux.Handle("DELETE /api/v1/users/@me/avatar", h.RequireAuth(httpx.Handle(h.deleteAvatar)))
 	mux.Handle("POST /api/v1/gateway/ticket", h.RequireAuth(httpx.Handle(h.ticket)))
 }
 
@@ -124,6 +127,28 @@ func (h *Handler) updateMe(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	u, err := h.svc.UpdateMe(r.Context(), PrincipalFrom(r.Context()), in)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, u)
+	return nil
+}
+
+func (h *Handler) setAvatar(w http.ResponseWriter, r *http.Request) error {
+	upload, err := httpx.ReadBody(w, r, imaging.MaxUploadBytes)
+	if err != nil {
+		return err
+	}
+	u, err := h.svc.SetAvatar(r.Context(), PrincipalFrom(r.Context()), upload)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, u)
+	return nil
+}
+
+func (h *Handler) deleteAvatar(w http.ResponseWriter, r *http.Request) error {
+	u, err := h.svc.DeleteAvatar(r.Context(), PrincipalFrom(r.Context()))
 	if err != nil {
 		return err
 	}

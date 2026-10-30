@@ -53,6 +53,7 @@ type inviteRef struct {
 	ID   uuid.UUID    `json:"id"`
 	Name string       `json:"name"`
 	Type *ChannelType `json:"type,omitempty"`
+	Icon *string      `json:"icon,omitempty"` // guilds only
 }
 
 const codeAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
@@ -213,7 +214,7 @@ func (s *Service) PreviewInvite(ctx context.Context, userID uuid.UUID, code stri
 	typ := ch.Type
 	out := InvitePreview{
 		Code:        inv.Code,
-		Guild:       inviteRef{ID: g.ID, Name: g.Name},
+		Guild:       inviteRef{ID: g.ID, Name: g.Name, Icon: g.Icon},
 		Channel:     inviteRef{ID: ch.ID, Name: ch.Name, Type: &typ},
 		MemberCount: count,
 		ExpiresAt:   inv.ExpiresAt,

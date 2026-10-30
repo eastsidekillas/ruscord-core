@@ -16,6 +16,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/hooks"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/slicex"
@@ -54,6 +55,7 @@ type Service struct {
 
 	channelsDeleted hooks.ChannelsDeleted
 	presences       Presences
+	files           *blob.Collector // icons; nil disables uploads
 }
 
 // Presences tells what others see of users; presence.Service implements it.
@@ -207,17 +209,22 @@ func (s *Service) SharesGuild(ctx context.Context, a, b uuid.UUID) (bool, error)
 // ListMine returns the guilds userID is a member of, in join order.
 func (s *Service) ListMine(ctx context.Context, userID uuid.UUID) ([]Guild, error) {
 	rows, err := s.pg.Query(ctx,
-		`SELECT g.id, g.name, g.owner_id, g.created_at
+		`SELECT `+guildCols+`
 		 FROM guilds g JOIN members m ON m.guild_id = g.id
 		 WHERE m.user_id = $1 ORDER BY m.joined_at, g.id`, userID)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (Guild, error) {
-		var g Guild
-		err := r.Scan(&g.ID, &g.Name, &g.OwnerID, &g.CreatedAt)
-		return g, err
-	})
+	return pgx.CollectRows(rows, scanGuild)
+}
+
+// GuildIDs lists the ids of every guild userID is a member of.
+func (s *Service) GuildIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.pg.Query(ctx, `SELECT guild_id FROM members WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 }
 
 type UpdateGuildInput struct {
@@ -235,8 +242,8 @@ func (s *Service) Update(ctx context.Context, userID, guildID uuid.UUID, in Upda
 	}
 	var g Guild
 	err := s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
-		if !a.base().Has(perm.ManageGuild) {
-			return httpx.ErrForbidden
+		if err := canManage(a); err != nil {
+			return err
 		}
 		g = a.guild
 		if in.Name != nil {
@@ -269,6 +276,11 @@ func (s *Service) Delete(ctx context.Context, userID, guildID uuid.UUID) error {
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM guilds WHERE id = $1`, guildID); err != nil {
 			return err
+		}
+		if a.guild.iconKey != nil {
+			if err := blob.Schedule(ctx, tx, *a.guild.iconKey, blob.ReplacedGrace); err != nil {
+				return err
+			}
 		}
 		return events.Write(ctx, tx, events.Event{
 			Topic: events.GuildTopic(guildID), Type: events.GuildDelete, Data: map[string]any{"id": guildID},

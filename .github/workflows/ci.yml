@@ -54,7 +54,7 @@ jobs:
       - name: start stack and check readiness
         run: |
           docker compose --env-file .env -f deploy/docker-compose.yml --profile app up -d --build --wait --wait-timeout 180 postgres valkey
-          docker compose --env-file .env -f deploy/docker-compose.yml --profile app up -d --build nats livekit app
+          docker compose --env-file .env -f deploy/docker-compose.yml --profile app up -d --build nats livekit seaweedfs app
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8080/readyz; then ready=1; break; fi
             sleep 2
@@ -87,6 +87,21 @@ jobs:
           curl -fsS -b jar $api/channels/$dm/messages | jq -e '.[0].content == "привет"' >/dev/null
           curl -fsS -b jar -H "$json" -d '{"content":"в канале"}' $api/channels/$channel/messages >/dev/null
           curl -fsS -b jar2 $api/channels/$channel/messages | jq -e 'length == 1' >/dev/null
+      - name: upload an avatar and a guild icon to SeaweedFS and fetch them back
+        run: |
+          api=http://127.0.0.1:8080/api/v1
+          pic=internal/platform/imaging/testdata/alpha.png
+          avatar=$(curl -fsS -b jar -X PUT --data-binary @$pic $api/users/@me/avatar | jq -r .avatar)
+          case "$avatar" in /cdn/avatars/*.png) ;; *) echo "avatar: $avatar"; exit 1;; esac
+          curl -fsS -D headers -o got.png http://127.0.0.1:8080$avatar
+          grep -qi '^content-type: image/png' headers
+          grep -qi '^x-content-type-options: nosniff' headers
+          file got.png | grep -q 'PNG image data, 256 x 256'
+          guild=$(curl -fsS -b jar $api/users/@me/guilds | jq -r '.[0].id')
+          icon=$(curl -fsS -b jar -X PUT --data-binary @$pic $api/guilds/$guild/icon | jq -r .icon)
+          curl -fsS -o /dev/null http://127.0.0.1:8080$icon
+          curl -fsS -b jar2 $api/users/$(curl -fsS -b jar $api/users/@me | jq -r .id)/profile | jq -e ".user.avatar == \"$avatar\"" >/dev/null
+          test "$(curl -s -o /dev/null -w '%{http_code}' -b jar -X PUT --data-binary '<svg/>' $api/users/@me/avatar)" = 422
       - name: outbox events reach JetStream
         run: |
           for i in $(seq 1 10); do

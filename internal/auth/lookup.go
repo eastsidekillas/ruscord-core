@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 
-	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 )
 
 // PublicUser is what other users may see about an account.
@@ -14,9 +16,24 @@ type PublicUser struct {
 	ID          uuid.UUID `json:"id"`
 	Username    string    `json:"username"`
 	DisplayName string    `json:"display_name"`
+	// Avatar is the URL path of the avatar (/cdn/...), or null.
+	Avatar *string `json:"avatar"`
 }
 
-const publicCols = `id, username, display_name`
+// Public is the part of u that other users may see.
+func (u User) Public() PublicUser {
+	return PublicUser{ID: u.ID, Username: u.Username, DisplayName: u.DisplayName, Avatar: u.Avatar}
+}
+
+const publicCols = `id, username, display_name, avatar`
+
+func scanPublic(row pgx.Row) (PublicUser, error) {
+	var u PublicUser
+	var avatar *string
+	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &avatar)
+	u.Avatar = blob.URLPtr(avatar)
+	return u, err
+}
 
 // Directory resolves public profiles; Service implements it. Other modules
 // depend on this interface, not on the users table.
@@ -61,8 +78,8 @@ func (s *Service) Users(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Pub
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var u PublicUser
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName); err != nil {
+		u, err := scanPublic(rows)
+		if err != nil {
 			return nil, err
 		}
 		out[u.ID] = u
@@ -75,10 +92,7 @@ func (s *Service) UserByUsername(ctx context.Context, username string) (PublicUs
 	if !usernameRe.MatchString(username) {
 		return PublicUser{}, httpx.ErrNotFound // cannot exist; also keeps NUL away from Postgres
 	}
-	var u PublicUser
-	err := s.store.pg.QueryRow(ctx,
-		`SELECT `+publicCols+` FROM users WHERE username = $1`, username).
-		Scan(&u.ID, &u.Username, &u.DisplayName)
+	u, err := scanPublic(s.store.pg.QueryRow(ctx, `SELECT `+publicCols+` FROM users WHERE username = $1`, username))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PublicUser{}, httpx.ErrNotFound
 	}

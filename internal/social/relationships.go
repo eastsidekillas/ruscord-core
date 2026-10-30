@@ -53,6 +53,7 @@ type Guilds interface {
 type Users interface {
 	auth.Directory
 	UserByUsername(ctx context.Context, username string) (auth.PublicUser, error)
+	Bio(ctx context.Context, id uuid.UUID) (string, error)
 }
 
 type Service struct {

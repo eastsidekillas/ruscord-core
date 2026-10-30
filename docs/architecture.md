@@ -13,7 +13,7 @@
 Клиенты (Web/Angular, Desktop/Tauri)
   │ HTTPS / WSS                                 │ WebRTC (DTLS-SRTP, UDP или TURN 443)
   ▼                                             ▼
-Caddy/nginx ──► api ──► Postgres                LiveKit SFU (+TURN)
+Caddy/nginx ──► api ──► Postgres, S3 (файлы)    LiveKit SFU (+TURN)
            └──► gateway ◄── NATS ◄── outbox-relay   ▲   │ вебхуки
                   │  └──► Valkey (сессии, presence)  │   ▼
                   └──► voice ──── RoomService API ───┘  voice
@@ -100,6 +100,16 @@ outbox, а через обычные subject'ы NATS `eph.*`; gateway держи
 subject на ноду и фильтрует их тем же router. Модуль `internal/presence` хранит
 живые сессии в Valkey с TTL и публикует изменение видимого статуса друзьям и
 серверам до 250 участников. Выбранный статус — `users.status` в auth.
+
+Шаг 5b-2 (ADR-0019): файлы в S3-совместимом хранилище (`internal/platform/blob`,
+в compose — SeaweedFS), картинки проходят `internal/platform/imaging`
+(проверка, квадрат 256×256, перекодирование), отдаются по `/cdn/<key>`.
+`users.avatar`, `users.bio`, `guilds.icon` хранят ключи; таблица `blob_garbage`
+— очередь удаления, которую разбирает сборщик с арендой, а ссылки проверяет
+модуль-владелец (`RefCheck`). Изменение профиля auth рассылает в серверы
+пользователя (`USER_PROFILE_UPDATE`), список серверов берёт у guild через
+интерфейс `GuildIDs`. Просмотр чужого профиля — в social (там известны связи и
+лички).
 
 ## Права
 

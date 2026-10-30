@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 )
 
 var errNotFound = errors.New("guild: not found")
@@ -33,15 +34,11 @@ func getGuild(ctx context.Context, q querier, id uuid.UUID) (Guild, error) {
 }
 
 func guildsIn(ctx context.Context, q querier, ids []uuid.UUID) (map[uuid.UUID]Guild, error) {
-	rows, err := q.Query(ctx, `SELECT id, name, owner_id, created_at FROM guilds WHERE id = ANY($1)`, ids)
+	rows, err := q.Query(ctx, `SELECT `+guildCols+` FROM guilds g WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
-	gs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Guild, error) {
-		var g Guild
-		err := r.Scan(&g.ID, &g.Name, &g.OwnerID, &g.CreatedAt)
-		return g, err
-	})
+	gs, err := pgx.CollectRows(rows, scanGuild)
 	if err != nil {
 		return nil, err
 	}
@@ -50,6 +47,15 @@ func guildsIn(ctx context.Context, q querier, ids []uuid.UUID) (map[uuid.UUID]Gu
 		out[g.ID] = g
 	}
 	return out, nil
+}
+
+const guildCols = `g.id, g.name, g.owner_id, g.created_at, g.icon`
+
+func scanGuild(r pgx.CollectableRow) (Guild, error) {
+	var g Guild
+	err := r.Scan(&g.ID, &g.Name, &g.OwnerID, &g.CreatedAt, &g.iconKey)
+	g.Icon = blob.URLPtr(g.iconKey)
+	return g, err
 }
 
 func listRoles(ctx context.Context, q querier, guildID uuid.UUID) ([]Role, error) {
