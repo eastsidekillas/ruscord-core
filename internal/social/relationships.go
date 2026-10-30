@@ -127,9 +127,37 @@ func deleteRel(ctx context.Context, tx pgx.Tx, from, to uuid.UUID) error {
 	return err
 }
 
-func relAdded(owner, other uuid.UUID, t RelType) events.Event {
+// relAdded tells owner about a new relationship with other; it carries
+// other's public profile, as the relationship list does, so a client can show
+// a new request or friend without another lookup.
+func relAdded(owner uuid.UUID, other pairUser, t RelType) events.Event {
 	return events.Event{Topic: events.UserTopic(owner), Type: events.RelationshipAdd,
-		Data: map[string]any{"id": other, "type": t}}
+		Data: Relationship{ID: other.ID, Type: t, Since: other.since, User: &other.PublicUser}}
+}
+
+// pairUser is one side of a relationship being written, with the time the
+// rows get (setRel stores now(), the transaction's start).
+type pairUser struct {
+	auth.PublicUser
+	since time.Time
+}
+
+// pair looks up the public profiles of both users of a relationship.
+func (s *Service) pair(ctx context.Context, tx pgx.Tx, me, other uuid.UUID) (pairUser, pairUser, error) {
+	var since time.Time
+	if err := tx.QueryRow(ctx, `SELECT now()`).Scan(&since); err != nil {
+		return pairUser{}, pairUser{}, err
+	}
+	us, err := s.users.Users(ctx, []uuid.UUID{me, other})
+	if err != nil {
+		return pairUser{}, pairUser{}, err
+	}
+	a, okA := us[me]
+	b, okB := us[other]
+	if !okA || !okB {
+		return pairUser{}, pairUser{}, errRequestFailed
+	}
+	return pairUser{a, since}, pairUser{b, since}, nil
 }
 
 func relRemoved(owner, other uuid.UUID, t RelType) events.Event {
@@ -188,7 +216,11 @@ func (s *Service) Request(ctx context.Context, me, other uuid.UUID) error {
 			if err := setRel(ctx, tx, other, me, RelFriend); err != nil {
 				return err
 			}
-			return events.Write(ctx, tx, relAdded(me, other, RelFriend), relAdded(other, me, RelFriend))
+			a, b, err := s.pair(ctx, tx, me, other)
+			if err != nil {
+				return err
+			}
+			return events.Write(ctx, tx, relAdded(me, b, RelFriend), relAdded(other, a, RelFriend))
 		}
 		if err := s.limiter.Check(ctx, ruleFriendRequest, me.String()); err != nil {
 			return err
@@ -206,7 +238,11 @@ func (s *Service) Request(ctx context.Context, me, other uuid.UUID) error {
 		if err := setRel(ctx, tx, other, me, RelIncoming); err != nil {
 			return err
 		}
-		return events.Write(ctx, tx, relAdded(me, other, RelOutgoing), relAdded(other, me, RelIncoming))
+		a, b, err := s.pair(ctx, tx, me, other)
+		if err != nil {
+			return err
+		}
+		return events.Write(ctx, tx, relAdded(me, b, RelOutgoing), relAdded(other, a, RelIncoming))
 	})
 }
 
@@ -230,7 +266,11 @@ func (s *Service) Block(ctx context.Context, me, other uuid.UUID) error {
 		if err := setRel(ctx, tx, me, other, RelBlocked); err != nil {
 			return err
 		}
-		return events.Write(ctx, tx, append(evs, relAdded(me, other, RelBlocked))...)
+		_, b, err := s.pair(ctx, tx, me, other)
+		if err != nil {
+			return err
+		}
+		return events.Write(ctx, tx, append(evs, relAdded(me, b, RelBlocked))...)
 	})
 }
 

@@ -326,3 +326,48 @@ func TestProfileVisibility(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// RELATIONSHIP_ADD carries the same object as the relationship list, so a
+// client shows a new request or friend without another request.
+func TestRelationshipAddCarriesUser(t *testing.T) {
+	e := newEnv(t)
+	ann, bob, cat := e.User("ann"), e.User("bob"), e.User("cat")
+	ann.Expect(http.StatusNoContent, "POST", rels, map[string]any{"username": "bob"})
+	bob.Expect(http.StatusNoContent, "PUT", rels+"/"+ann.ID.String(), map[string]any{})
+	ann.Expect(http.StatusNoContent, "PUT", rels+"/"+cat.ID.String(), map[string]any{"type": 2})
+
+	listed := map[string]map[string]any{} // owner/other -> list entry
+	for _, u := range []*apitest.User{ann, bob} {
+		for _, r := range list(u.Expect(http.StatusOK, "GET", rels, nil)) {
+			listed["user."+u.ID.String()+"/"+str(obj(r)["id"])] = obj(r)
+		}
+	}
+	evs := e.Outbox("RELATIONSHIP_ADD")
+	want := []struct {
+		topic string
+		other *apitest.User
+		typ   float64
+	}{
+		{"user." + ann.ID.String(), bob, 4}, {"user." + bob.ID.String(), ann, 3},
+		{"user." + bob.ID.String(), ann, 1}, {"user." + ann.ID.String(), bob, 1},
+		{"user." + ann.ID.String(), cat, 2},
+	}
+	if len(evs) != len(want) {
+		t.Fatalf("%d RELATIONSHIP_ADD, want %d", len(evs), len(want))
+	}
+	for i, w := range want {
+		ev := evs[i]
+		u := obj(ev.Data["user"])
+		if ev.Topic != w.topic || ev.Data["id"] != w.other.ID.String() || ev.Data["type"] != w.typ ||
+			u["id"] != w.other.ID.String() || u["username"] == "" || ev.Data["since"] == nil {
+			t.Fatalf("event %d: %s %v", i, ev.Topic, ev.Data)
+		}
+		if _, leaked := u["email"]; leaked {
+			t.Fatalf("event %d carries an email: %v", i, u)
+		}
+	}
+	// The friendship events carry the time the list shows.
+	if got, l := evs[3].Data["since"], listed["user."+ann.ID.String()+"/"+bob.ID.String()]; l == nil || got != l["since"] {
+		t.Fatalf("since %v, list %v", got, l)
+	}
+}

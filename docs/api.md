@@ -136,7 +136,7 @@ username; email уникален без учёта регистра.
 и позиция 0. Его нельзя удалить, переименовать, переместить или выдать
 (400 `everyone_role`, у каждого случая свой текст), но можно менять его права.
 
-Участник: `{guild_id, user_id, nick, roles, joined_at, user: {id, username, display_name}, status?}`.
+Участник: `{guild_id, user_id, nick, roles, joined_at, user, status?}`, `user` — публичный пользователь.
 `status` (`online`, `idle`, `dnd`, `offline`) есть только в `GET /guilds/{id}/members`
 и только на серверах до 250 участников: на больших статусы участников в MVP не
 показываются (ADR-0018).
@@ -191,7 +191,8 @@ username; email уникален без учёта регистра.
 блокировку нужно снять перед заявкой (400 `user_blocked`). Лимиты: 1000 друзей и
 исходящих заявок, 30 заявок в час.
 
-События: `RELATIONSHIP_ADD {id, type}` и `RELATIONSHIP_REMOVE {id, type}` в личный топик.
+События в личный топик: `RELATIONSHIP_ADD {id, type, since, user}` — тот же
+объект, что в списке, — и `RELATIONSHIP_REMOVE {id, type}`.
 
 ## Личные чаты
 
@@ -232,8 +233,8 @@ username; email уникален без учёта регистра.
 | `PATCH /channels/{id}/messages/{message_id}` | `{content}` | 200, сообщение | автор и `SEND_MESSAGES` сейчас |
 | `DELETE /channels/{id}/messages/{message_id}` | — | 204 | автор или `MANAGE_MESSAGES` (в личках только автор) |
 
-Сообщение: `{id, channel_id, guild_id?, author: {id, username, display_name}, content,
-nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
+Сообщение: `{id, channel_id, guild_id?, author, content,
+nonce?, reply_to?, mention_everyone, created_at, edited_at?}`, `author` — публичный пользователь.
 
 - `content`: от 1 до 4000 символов после обрезки пробелов. `nonce` — строка
   до 64 байт от клиента; повтор с тем же nonce в том же канале не создаёт
