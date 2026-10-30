@@ -326,3 +326,44 @@ func TestProfileVisibility(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// RELATIONSHIP_ADD has the shape of the relationship list, with the other
+// user: a request from a stranger is shown without another request.
+func TestRelationshipAddCarriesUser(t *testing.T) {
+	e := newEnv(t)
+	ann, bob := e.User("ann"), e.User("bob")
+	ann.Expect(http.StatusNoContent, "POST", rels, map[string]any{"username": "bob"})
+	bob.Expect(http.StatusNoContent, "PUT", rels+"/"+ann.ID.String(), map[string]any{}) // accept
+	ann.Expect(http.StatusNoContent, "PUT", rels+"/"+bob.ID.String(), map[string]any{"type": 2})
+
+	want := []struct {
+		topic string
+		typ   float64
+		user  string
+	}{
+		{"user." + ann.ID.String(), 4, "bob"},
+		{"user." + bob.ID.String(), 3, "ann"},
+		{"user." + bob.ID.String(), 1, "ann"},
+		{"user." + ann.ID.String(), 1, "bob"},
+		{"user." + ann.ID.String(), 2, "bob"},
+	}
+	got := e.Outbox("RELATIONSHIP_ADD")
+	if len(got) != len(want) {
+		t.Fatalf("%d events, want %d: %v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		ev := got[i]
+		if ev.Topic != w.topic || ev.Data["type"] != w.typ || obj(ev.Data["user"])["username"] != w.user ||
+			str(ev.Data["since"]) == "" || str(ev.Data["id"]) != str(obj(ev.Data["user"])["id"]) {
+			t.Errorf("event %d: %s %v, want %s type %v about %s", i, ev.Topic, ev.Data, w.topic, w.typ, w.user)
+		}
+		if _, leaked := obj(ev.Data["user"])["email"]; leaked {
+			t.Errorf("event %d carries an email: %v", i, ev.Data)
+		}
+	}
+	// The event equals what the list then shows.
+	list := obj(list(ann.Expect(http.StatusOK, "GET", rels, nil))[0])
+	if list["since"] != got[4].Data["since"] {
+		t.Errorf("since in the list %v, in the event %v", list["since"], got[4].Data["since"])
+	}
+}

@@ -115,11 +115,14 @@ func pairKey(a, b uuid.UUID) string {
 	return a.String() + ":" + b.String()
 }
 
-func setRel(ctx context.Context, tx pgx.Tx, from, to uuid.UUID, t RelType) error {
-	_, err := tx.Exec(ctx,
+// setRel stores the from→to relationship and returns it as from sees it.
+func setRel(ctx context.Context, tx pgx.Tx, from, to uuid.UUID, t RelType) (Relationship, error) {
+	rel := Relationship{ID: to, Type: t}
+	err := tx.QueryRow(ctx,
 		`INSERT INTO relationships (user_id, target_id, type) VALUES ($1, $2, $3)
-		 ON CONFLICT (user_id, target_id) DO UPDATE SET type = $3, created_at = now()`, from, to, t)
-	return err
+		 ON CONFLICT (user_id, target_id) DO UPDATE SET type = $3, created_at = now()
+		 RETURNING created_at`, from, to, t).Scan(&rel.Since)
+	return rel, err
 }
 
 func deleteRel(ctx context.Context, tx pgx.Tx, from, to uuid.UUID) error {
@@ -127,9 +130,34 @@ func deleteRel(ctx context.Context, tx pgx.Tx, from, to uuid.UUID) error {
 	return err
 }
 
-func relAdded(owner, other uuid.UUID, t RelType) events.Event {
-	return events.Event{Topic: events.UserTopic(owner), Type: events.RelationshipAdd,
-		Data: map[string]any{"id": other, "type": t}}
+// relAdded tells owner about a new relationship, in the shape of the
+// relationship list: with the other user's public profile, so a request from
+// a stranger can be shown without another request.
+func (s *Service) relAdded(ctx context.Context, owner uuid.UUID, rel Relationship) (events.Event, error) {
+	err := auth.Attach(ctx, s.users, []*Relationship{&rel}, func(r *Relationship) *uuid.UUID { return &r.ID },
+		func(r *Relationship, u auth.PublicUser) { r.User = &u })
+	return events.Event{Topic: events.UserTopic(owner), Type: events.RelationshipAdd, Data: rel}, err
+}
+
+// setPair stores both directions of a relationship change and returns the
+// events telling each side.
+func (s *Service) setPair(ctx context.Context, tx pgx.Tx, me, other uuid.UUID, mine, theirs RelType) ([]events.Event, error) {
+	var evs []events.Event
+	for _, side := range []struct {
+		from, to uuid.UUID
+		t        RelType
+	}{{me, other, mine}, {other, me, theirs}} {
+		rel, err := setRel(ctx, tx, side.from, side.to, side.t)
+		if err != nil {
+			return nil, err
+		}
+		ev, err := s.relAdded(ctx, side.from, rel)
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, ev)
+	}
+	return evs, nil
 }
 
 func relRemoved(owner, other uuid.UUID, t RelType) events.Event {
@@ -182,13 +210,11 @@ func (s *Service) Request(ctx context.Context, me, other uuid.UUID) error {
 		case mine == RelFriend, mine == RelOutgoing:
 			return nil
 		case mine == RelIncoming:
-			if err := setRel(ctx, tx, me, other, RelFriend); err != nil {
+			evs, err := s.setPair(ctx, tx, me, other, RelFriend, RelFriend)
+			if err != nil {
 				return err
 			}
-			if err := setRel(ctx, tx, other, me, RelFriend); err != nil {
-				return err
-			}
-			return events.Write(ctx, tx, relAdded(me, other, RelFriend), relAdded(other, me, RelFriend))
+			return events.Write(ctx, tx, evs...)
 		}
 		if err := s.limiter.Check(ctx, ruleFriendRequest, me.String()); err != nil {
 			return err
@@ -200,13 +226,11 @@ func (s *Service) Request(ctx context.Context, me, other uuid.UUID) error {
 		if n >= maxFriends {
 			return errTooManyFriends
 		}
-		if err := setRel(ctx, tx, me, other, RelOutgoing); err != nil {
+		evs, err := s.setPair(ctx, tx, me, other, RelOutgoing, RelIncoming)
+		if err != nil {
 			return err
 		}
-		if err := setRel(ctx, tx, other, me, RelIncoming); err != nil {
-			return err
-		}
-		return events.Write(ctx, tx, relAdded(me, other, RelOutgoing), relAdded(other, me, RelIncoming))
+		return events.Write(ctx, tx, evs...)
 	})
 }
 
@@ -227,10 +251,15 @@ func (s *Service) Block(ctx context.Context, me, other uuid.UUID) error {
 			}
 			evs = append(evs, relRemoved(other, me, theirs))
 		}
-		if err := setRel(ctx, tx, me, other, RelBlocked); err != nil {
+		rel, err := setRel(ctx, tx, me, other, RelBlocked)
+		if err != nil {
 			return err
 		}
-		return events.Write(ctx, tx, append(evs, relAdded(me, other, RelBlocked))...)
+		added, err := s.relAdded(ctx, me, rel)
+		if err != nil {
+			return err
+		}
+		return events.Write(ctx, tx, append(evs, added)...)
 	})
 }
 

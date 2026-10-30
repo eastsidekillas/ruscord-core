@@ -191,7 +191,7 @@ username; email уникален без учёта регистра.
 блокировку нужно снять перед заявкой (400 `user_blocked`). Лимиты: 1000 друзей и
 исходящих заявок, 30 заявок в час.
 
-События: `RELATIONSHIP_ADD {id, type}` и `RELATIONSHIP_REMOVE {id, type}` в личный топик.
+События в личный топик: `RELATIONSHIP_ADD {id, type, since, user}` — в том же виде, что элемент списка, с публичным пользователем (заявку от незнакомого можно показать сразу), и `RELATIONSHIP_REMOVE {id, type}`.
 
 ## Личные чаты
 
@@ -232,7 +232,7 @@ username; email уникален без учёта регистра.
 | `PATCH /channels/{id}/messages/{message_id}` | `{content}` | 200, сообщение | автор и `SEND_MESSAGES` сейчас |
 | `DELETE /channels/{id}/messages/{message_id}` | — | 204 | автор или `MANAGE_MESSAGES` (в личках только автор) |
 
-Сообщение: `{id, channel_id, guild_id?, author: {id, username, display_name}, content,
+Сообщение: `{id, channel_id, guild_id?, author: {id, username, display_name, avatar}, content,
 nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
 
 - `content`: от 1 до 4000 символов после обрезки пробелов. `nonce` — строка
