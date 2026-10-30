@@ -22,6 +22,9 @@ func TestLoadDefaultsInDev(t *testing.T) {
 			t.Errorf("role %s missing from default roles", r)
 		}
 	}
+	if c.FilesEnabled() || !strings.HasPrefix(c.S3Endpoint, "http://127.0.0.1:") {
+		t.Errorf("dev without S3 keys: files enabled %v, endpoint %q", c.FilesEnabled(), c.S3Endpoint)
+	}
 	if !strings.HasPrefix(c.HTTPAddr, "127.0.0.1:") {
 		t.Errorf("dev must listen on loopback by default, got %q", c.HTTPAddr)
 	}
@@ -68,7 +71,8 @@ func TestLoadRequiresSecretsOutsideDev(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing secrets in prod")
 	}
-	for _, key := range []string{"RUSCORD_JWT_ED25519_SEED", "RUSCORD_REDIS_PASSWORD", "RUSCORD_LIVEKIT_API_KEY", "RUSCORD_LIVEKIT_API_SECRET"} {
+	for _, key := range []string{"RUSCORD_JWT_ED25519_SEED", "RUSCORD_REDIS_PASSWORD", "RUSCORD_LIVEKIT_API_KEY", "RUSCORD_LIVEKIT_API_SECRET",
+		"RUSCORD_S3_ACCESS_KEY", "RUSCORD_S3_SECRET_KEY"} {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error does not mention %s: %v", key, err)
 		}
@@ -85,6 +89,16 @@ func TestLoadRejectsShortLiveKitSecret(t *testing.T) {
 	}))
 	if err == nil || !strings.Contains(err.Error(), "at least 32") {
 		t.Fatalf("expected short secret error, got %v", err)
+	}
+}
+
+func TestLoadS3KeysComeInPairs(t *testing.T) {
+	if _, err := load(env(map[string]string{"RUSCORD_S3_ACCESS_KEY": "k"})); err == nil || !strings.Contains(err.Error(), "both or neither") {
+		t.Fatalf("access key without secret: %v", err)
+	}
+	c, err := load(env(map[string]string{"RUSCORD_S3_ACCESS_KEY": "k", "RUSCORD_S3_SECRET_KEY": "s"}))
+	if err != nil || !c.FilesEnabled() {
+		t.Fatalf("both keys: %v, enabled %v", err, c.FilesEnabled())
 	}
 }
 

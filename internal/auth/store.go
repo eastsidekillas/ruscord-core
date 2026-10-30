@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/eastsidekillas/ruscord-core/internal/events"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 )
 
 type User struct {
@@ -21,7 +22,10 @@ type User struct {
 	DisplayName string    `json:"display_name"`
 	CreatedAt   time.Time `json:"created_at"`
 	// Status is the presence the user chose (online, idle, dnd, invisible).
-	Status       string `json:"status"`
+	Status string `json:"status"`
+	// Avatar is the URL path of the avatar (/cdn/...), or null.
+	Avatar       *string `json:"avatar"`
+	Bio          string  `json:"bio"`
 	passwordHash string
 }
 
@@ -100,11 +104,13 @@ func (s *store) userByID(ctx context.Context, id uuid.UUID) (User, error) {
 		`SELECT `+userCols+` FROM users WHERE id = $1`, id))
 }
 
-const userCols = `id, email, username, display_name, created_at, status, password_hash`
+const userCols = `id, email, username, display_name, created_at, status, avatar, bio, password_hash`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.DisplayName, &u.CreatedAt, &u.Status, &u.passwordHash)
+	var avatar *string
+	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.DisplayName, &u.CreatedAt, &u.Status, &avatar, &u.Bio, &u.passwordHash)
+	u.Avatar = blob.URLPtr(avatar)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, errNotFound
 	}
@@ -162,20 +168,4 @@ func (s *store) sessionActive(ctx context.Context, id uuid.UUID, now time.Time) 
 	err := s.pg.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1 AND revoked_at IS NULL AND expires_at > $2)`, id, now).Scan(&ok)
 	return ok, err
-}
-
-// setStatus stores the chosen status and tells the user's own sessions in
-// the same transaction.
-func (s *store) setStatus(ctx context.Context, id uuid.UUID, status string) (User, error) {
-	var u User
-	err := pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
-		var err error
-		u, err = scanUser(tx.QueryRow(ctx,
-			`UPDATE users SET status = $2, updated_at = now() WHERE id = $1 RETURNING `+userCols, id, status))
-		if err != nil {
-			return err
-		}
-		return events.Write(ctx, tx, events.Event{Topic: events.UserTopic(id), Type: events.UserUpdate, Data: u})
-	})
-	return u, err
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/imaging"
 )
 
 type Handler struct {
@@ -22,11 +23,13 @@ func NewHandler(svc *Service, requireAuth func(http.Handler) http.Handler) *Hand
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	routes := map[string]func(http.ResponseWriter, *http.Request) error{
-		"GET /api/v1/users/@me/guilds":  h.listMine,
-		"POST /api/v1/guilds":           h.create,
-		"GET /api/v1/guilds/{guild}":    h.get,
-		"PATCH /api/v1/guilds/{guild}":  h.update,
-		"DELETE /api/v1/guilds/{guild}": h.delete,
+		"GET /api/v1/users/@me/guilds":       h.listMine,
+		"POST /api/v1/guilds":                h.create,
+		"GET /api/v1/guilds/{guild}":         h.get,
+		"PATCH /api/v1/guilds/{guild}":       h.update,
+		"DELETE /api/v1/guilds/{guild}":      h.delete,
+		"PUT /api/v1/guilds/{guild}/icon":    h.setIcon,
+		"DELETE /api/v1/guilds/{guild}/icon": h.deleteIcon,
 
 		"GET /api/v1/guilds/{guild}/channels":                    h.listChannels,
 		"POST /api/v1/guilds/{guild}/channels":                   h.createChannel,
@@ -122,6 +125,36 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	g, err := h.svc.Update(r.Context(), auth.UserID(r), id, in)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, g)
+	return nil
+}
+
+func (h *Handler) setIcon(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "guild")
+	if err != nil {
+		return err
+	}
+	upload, err := httpx.ReadBody(w, r, imaging.MaxUploadBytes)
+	if err != nil {
+		return err
+	}
+	g, err := h.svc.SetIcon(r.Context(), auth.UserID(r), id, upload)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, g)
+	return nil
+}
+
+func (h *Handler) deleteIcon(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "guild")
+	if err != nil {
+		return err
+	}
+	g, err := h.svc.DeleteIcon(r.Context(), auth.UserID(r), id)
 	if err != nil {
 		return err
 	}

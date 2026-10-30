@@ -31,6 +31,9 @@ type Guild struct {
 	Name      string    `json:"name"`
 	OwnerID   uuid.UUID `json:"owner_id"`
 	CreatedAt time.Time `json:"created_at"`
+	// Icon is the URL path of the icon (/cdn/...), or null.
+	Icon    *string `json:"icon"`
+	iconKey *string // storage key behind Icon
 }
 
 type Role struct {

@@ -43,6 +43,11 @@ const (
 	// UserUpdate goes to the user's own topic when their account changes
 	// (for now, the chosen status). Carries the full private user object.
 	UserUpdate = "USER_UPDATE"
+	// UserProfileUpdate goes to the guild topics of a user whose public
+	// profile (name, avatar) changed, with the public user. It is written
+	// without the guilds' locks, so the gateway does not apply a snapshot's
+	// cursor to it (docs/adr/0019-files.md).
+	UserProfileUpdate = "USER_PROFILE_UPDATE"
 
 	// SessionRevoke goes to the user topic when a sign-in session is revoked
 	// (logout, refresh-token reuse). It is internal: the gateway closes the

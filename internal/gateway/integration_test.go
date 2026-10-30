@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image/color"
 	"net/http"
 	"net/http/cookiejar"
 	"strconv"
@@ -43,6 +44,8 @@ func newStackRelay(t *testing.T, run bool, opts Options) *stack {
 	eph := events.NewEphemeral(nc)
 	guilds := guild.NewService(e.PG, e.Auth, e.Limiter)
 	socials := social.NewService(e.PG, e.Auth, guilds, e.Limiter)
+	e.Auth.SetGuildIDs(guilds)
+	guilds.WithFiles(e.Files)
 	pres := presence.NewService(e.Redis, eph, guilds, PresenceTTL(opts))
 	guilds.WithPresences(pres)
 	guilds.OnChannelsDeleted(message.DeleteChannels)
@@ -394,5 +397,37 @@ func TestGatewayTypingAndPresence(t *testing.T) {
 	bobWS.expectDispatch(events.UserUpdate)
 	if st := statusOf(t, ownerWS, bob.ID); st != presence.Offline {
 		t.Fatalf("bob invisible: %s", st)
+	}
+}
+
+// A profile change crosses the real stack once per session, however many
+// guilds the two users share.
+func TestProfileUpdateOnce(t *testing.T) {
+	s := newStack(t)
+	owner, bob := s.User("owner"), s.User("bob")
+	guildWith(owner, bob)
+	guildWith(owner, bob)
+	ownerWS, _ := s.connect(owner)
+
+	_, out := bob.Upload("PUT", "/api/v1/users/@me/avatar", apitest.PNG(16, 16, color.NRGBA{9, 9, 9, 255}))
+	avatar := apitest.Str(apitest.Obj(out)["avatar"])
+	profileOf := func() map[string]any {
+		t.Helper()
+		var p struct {
+			User map[string]any `json:"user"`
+		}
+		if err := json.Unmarshal(ownerWS.expectDispatch(events.UserProfileUpdate).D, &p); err != nil {
+			t.Fatal(err)
+		}
+		return p.User
+	}
+	if u := profileOf(); u["id"] != bob.ID.String() || u["avatar"] != avatar || avatar == "" {
+		t.Fatalf("profile update %v, avatar %q", u, avatar)
+	}
+	// The second guild's copy must not follow: the next frame is the next change.
+	bob.Expect(http.StatusOK, "PATCH", "/api/v1/users/@me", map[string]any{"bio": "не для серверов"})
+	bob.Expect(http.StatusOK, "PATCH", "/api/v1/users/@me", map[string]any{"display_name": "Боб"})
+	if u := profileOf(); u["display_name"] != "Боб" || u["avatar"] != avatar {
+		t.Fatalf("next profile update %v: a copy of the first or a bio change leaked", u)
 	}
 }

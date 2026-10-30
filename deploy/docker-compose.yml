@@ -39,6 +39,17 @@ services:
       - "127.0.0.1:8222:8222"   # monitoring
     volumes: ["nats:/data"]
 
+  seaweedfs:
+    # S3-compatible storage for avatars and icons (docs/adr/0019). The image
+    # runs "weed mini -dir=/data"; S3_BUCKET creates the bucket on start.
+    image: chrislusf/seaweedfs:4.47
+    environment:
+      AWS_ACCESS_KEY_ID: ${RUSCORD_S3_ACCESS_KEY:?set in .env}
+      AWS_SECRET_ACCESS_KEY: ${RUSCORD_S3_SECRET_KEY:?set in .env}
+      S3_BUCKET: ruscord
+    ports: ["127.0.0.1:8333:8333"]   # S3 API only
+    volumes: ["seaweedfs:/data"]
+
   livekit:
     image: livekit/livekit-server:v1.13.10
     command: ["--config", "/etc/livekit.yaml"]
@@ -61,13 +72,16 @@ services:
       RUSCORD_REDIS_ADDR: valkey:6379
       RUSCORD_NATS_URL: nats://nats:4222
       RUSCORD_LIVEKIT_URL: ws://livekit:7880
+      RUSCORD_S3_ENDPOINT: http://seaweedfs:8333
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       postgres: { condition: service_healthy }
       valkey: { condition: service_healthy }
       nats: { condition: service_started }
+      seaweedfs: { condition: service_started }
 
 volumes:
   pg:
   valkey:
   nats:
+  seaweedfs:

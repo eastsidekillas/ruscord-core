@@ -62,3 +62,26 @@ func TestQueryParams(t *testing.T) {
 		}
 	}
 }
+
+func TestReadBody(t *testing.T) {
+	read := func(body string, limit int64) (int, string) {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPut, "/", strings.NewReader(body))
+		b, err := ReadBody(w, r, limit)
+		if err != nil {
+			var e *Error
+			_ = errors.As(err, &e)
+			return e.Status, e.Code
+		}
+		return 200, string(b)
+	}
+	if st, got := read("abc", 3); st != 200 || got != "abc" {
+		t.Fatalf("at the limit: %d %q", st, got)
+	}
+	if st, code := read("abcd", 3); st != http.StatusRequestEntityTooLarge || code != "body_too_large" {
+		t.Fatalf("over the limit: %d %s", st, code)
+	}
+	if st, code := read("", 3); st != http.StatusBadRequest || code != "invalid_request" {
+		t.Fatalf("empty: %d %s", st, code)
+	}
+}

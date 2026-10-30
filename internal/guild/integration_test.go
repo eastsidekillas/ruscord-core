@@ -25,6 +25,7 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	e := apitest.New(t)
 	svc := NewService(e.PG, e.Auth, e.Limiter)
+	svc.WithFiles(e.Files)
 	NewHandler(svc, e.RequireAuth).Register(e.Mux)
 	return &env{Env: e, svc: svc}
 }

@@ -127,3 +127,20 @@ func Handle(fn func(w http.ResponseWriter, r *http.Request) error) http.HandlerF
 		}
 	}
 }
+
+// ReadBody reads a raw request body (an uploaded file) of at most limit
+// bytes; a larger one is 413 body_too_large, an empty one 400.
+func ReadBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		return nil, NewError(http.StatusRequestEntityTooLarge, "body_too_large",
+			fmt.Sprintf("Файл больше %d МиБ", limit>>20))
+	case err != nil:
+		return nil, NewError(http.StatusBadRequest, "invalid_request", "Не удалось прочитать тело запроса")
+	case len(b) == 0:
+		return nil, NewError(http.StatusBadRequest, "invalid_request", "Пустое тело запроса, ожидается файл")
+	}
+	return b, nil
+}

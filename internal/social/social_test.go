@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/apitest"
@@ -256,3 +257,72 @@ func TestGroupDMs(t *testing.T) {
 	ann.Expect(http.StatusBadRequest, "PUT", "/api/v1/channels/"+big+"/recipients/"+cat.ID.String(), nil)
 	ann.Expect(http.StatusUnprocessableEntity, "POST", dms, map[string]any{"recipients": append(nine, cat.ID)})
 }
+
+// A profile is visible to anyone connected to its user (common guild or DM,
+// a relationship), and looks missing to everyone else.
+func TestProfileVisibility(t *testing.T) {
+	e := newEnv(t)
+	ann := e.User("ann")
+	mate, friend, requester, blocked, exFriend, stranger := e.User("mate"), e.User("friend"), e.User("requester"),
+		e.User("blocked"), e.User("exfriend"), e.User("stranger")
+	if _, err := e.Auth.UpdateMe(t.Context(), auth.Principal{UserID: ann.ID}, auth.UpdateMeInput{Bio: ptr("О себе")}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := e.guilds.Create(t.Context(), ann.ID, guild.CreateGuildInput{Name: "общий"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.guilds.AddMember(t.Context(), g.ID, mate.ID); err != nil {
+		t.Fatal(err)
+	}
+	befriend(ann, friend)
+	requester.Expect(http.StatusNoContent, "PUT", rels+"/"+ann.ID.String(), map[string]any{})
+	ann.Expect(http.StatusNoContent, "PUT", rels+"/"+blocked.ID.String(), map[string]any{"type": 2})
+	befriend(ann, exFriend)
+	exFriend.Expect(http.StatusOK, "POST", dms, map[string]any{"recipient_id": ann.ID})
+	exFriend.Expect(http.StatusNoContent, "DELETE", rels+"/"+ann.ID.String(), nil) // the DM stays
+
+	profile := func(id string) string { return "/api/v1/users/" + id + "/profile" }
+	for _, c := range []struct {
+		name   string
+		viewer *apitest.User
+		target string
+		code   int
+	}{
+		{"self by id", ann, ann.ID.String(), 200},
+		{"self by @me", ann, "@me", 200},
+		{"guild mate", mate, ann.ID.String(), 200},
+		{"friend", friend, ann.ID.String(), 200},
+		{"sent a request", requester, ann.ID.String(), 200},
+		{"got a request", ann, requester.ID.String(), 200},
+		{"common DM only", exFriend, ann.ID.String(), 200},
+		{"blocker sees the blocked", ann, blocked.ID.String(), 200},
+		{"blocked does not see the blocker", blocked, ann.ID.String(), 404},
+		{"stranger", stranger, ann.ID.String(), 404},
+		{"unknown user", ann, uuid.NewString(), 404},
+		{"malformed id", ann, "nope", 404},
+	} {
+		code, out := c.viewer.Do("GET", profile(c.target), nil)
+		if code != c.code {
+			t.Errorf("%s: %d %v, want %d", c.name, code, out, c.code)
+			continue
+		}
+		if code == 200 && c.target == ann.ID.String() {
+			p := obj(out)
+			if p["bio"] != "О себе" || obj(p["user"])["username"] != "ann" {
+				t.Errorf("%s: %v", c.name, p)
+			}
+			if _, ok := obj(p["user"])["email"]; ok {
+				t.Errorf("%s: email in a profile: %v", c.name, p)
+			}
+		}
+	}
+	// The blocked one cannot tell the block from a missing user.
+	_, blockedOut := blocked.Do("GET", profile(ann.ID.String()), nil)
+	_, missingOut := blocked.Do("GET", profile(uuid.NewString()), nil)
+	if obj(blockedOut)["code"] != obj(missingOut)["code"] || obj(blockedOut)["message"] != obj(missingOut)["message"] {
+		t.Fatalf("blocked %v and missing %v answers differ", blockedOut, missingOut)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

@@ -39,14 +39,44 @@ origin задаёт `RUSCORD_ALLOWED_ORIGINS`.
 | `POST /auth/logout` | — (cookie `rc_rt`) | 204, стирает cookie | — |
 | `GET /users/@me` | — | 200, пользователь | 401 |
 | `POST /gateway/ticket` | — | 200 `{ticket, expires_in: 30}` | 401, 429 |
-| `PATCH /users/@me` | `{status}` | 200, пользователь | 401, 422, 429 |
+| `PATCH /users/@me` | `{display_name?, bio?, status?}` | 200, пользователь | 401, 422, 429 |
+| `PUT /users/@me/avatar` | картинка (тело запроса) | 200, пользователь | 401, 413, 422, 429, 503 |
+| `DELETE /users/@me/avatar` | — | 200, пользователь | 401, 429 |
+| `GET /users/{id}/profile` | — | 200, `{user, bio}` | 401, 404 |
 
-Пользователь: `{id, email, username, display_name, created_at, status}`.
+Пользователь: `{id, email, username, display_name, created_at, status, avatar, bio}`.
+Публичный пользователь (в участниках, связях, личках, профиле):
+`{id, username, display_name, avatar}`.
+
+`PATCH /users/@me` меняет только переданные поля (`null` = не передано), нужно
+хотя бы одно: `display_name` 1–32 символа, `bio` («о себе») до 190 символов,
+пробелы по краям обрезаются. 10 изменений в минуту.
 
 `status` — статус, который пользователь выбрал: `online`, `idle`, `dnd` или
 `invisible`. Другие видят `offline`, если вы не в сети или выбрали `invisible`
 (см. «Статусы» в разделе gateway). Смена статуса: 10 в минуту; изменение
 приходит вашим сессиям событием `USER_UPDATE` с полным объектом пользователя.
+
+### Аватар и иконка сервера
+
+Картинка отправляется телом запроса как есть (любой `Content-Type`), до 8 МиБ
+(больше — 413 `body_too_large`). Принимаются PNG, JPEG, WebP и GIF (первый
+кадр), не больше 4096 пикселей по стороне; иначе 422 `invalid_image` или
+`image_too_large`. SVG и анимированный WebP не принимаются. Сервер вырезает
+центральный квадрат и сохраняет 256×256 (PNG при прозрачности, иначе JPEG),
+метаданные (EXIF) удаляются. Лимит — 5 загрузок за 10 минут на пользователя,
+аватары и иконки вместе. 503 `files_unavailable` — хранилище не настроено.
+
+`avatar` (и `icon` у сервера) — путь вида `/cdn/avatars/<id>/<hash>.png` или
+`null`. Файл по пути никогда не меняется, его можно кешировать навсегда; новый
+аватар — новый путь. Старый файл доступен ещё сутки.
+
+Изменение имени или аватара приходит участникам ваших серверов событием
+`USER_PROFILE_UPDATE` (см. gateway).
+
+`GET /users/{id}/profile` (или `@me`) доступен, если у вас с человеком общий
+сервер, общая личка или группа, или связь (друг, заявка, ваша блокировка).
+Иначе 404, как для несуществующего.
 
 Правила полей: `username` от 2 до 32 символов из латиницы, цифр, `_` и `.`, без
 `..`, уникален без учёта регистра; `display_name` от 1 до 32 символов, по
@@ -70,6 +100,8 @@ username; email уникален без учёта регистра.
 | `POST /guilds` | `{name}` | 201, полный сервер | лимит 100 серверов на пользователя |
 | `GET /guilds/{id}` | — | 200, полный сервер | участник |
 | `PATCH /guilds/{id}` | `{name?}` | 200, guild | `MANAGE_GUILD` |
+| `PUT /guilds/{id}/icon` | картинка (тело запроса) | 200, guild | `MANAGE_GUILD`; правила — «Аватар и иконка сервера» |
+| `DELETE /guilds/{id}/icon` | — | 200, guild | `MANAGE_GUILD` |
 | `DELETE /guilds/{id}` | — | 204 | только владелец |
 | `GET /guilds/{id}/channels` | — | 200, видимые каналы | участник |
 | `POST /guilds/{id}/channels` | `{type, name, topic?, parent_id?, user_limit?, bitrate?}` | 201, канал | `MANAGE_CHANNELS` |
@@ -88,7 +120,8 @@ username; email уникален без учёта регистра.
 | `PUT /guilds/{id}/members/{user_id}/roles/{role_id}` | — | 204 | можете выдать роль и выше участника (или это вы) |
 | `DELETE /guilds/{id}/members/{user_id}/roles/{role_id}` | — | 204 | то же |
 
-Полный сервер: `{id, name, owner_id, created_at, roles, channels, member, permissions, channel_permissions}`,
+Сервер (`guild`): `{id, name, owner_id, created_at, icon}` (`icon` — путь `/cdn/...` или `null`).
+Полный сервер: `{id, name, owner_id, created_at, icon, roles, channels, member, permissions, channel_permissions}`,
 где `channels` только видимые вам, `member` ваше участие (с `user`), `permissions` ваши
 права на уровне сервера, `channel_permissions` — `{channel_id: права}` для каждого
 канала из `channels` с учётом переопределений. Права считает сервер
@@ -135,7 +168,7 @@ username; email уникален без учёта регистра.
 - Просмотр и вход по коду вместе ограничены 30/мин на пользователя, чтобы коды нельзя было перебирать.
 
 Приглашение: `{code, guild_id, channel_id, inviter_id, inviter?, max_uses, uses, expires_at, created_at}`.
-Превью: `{code, guild: {id, name}, channel: {id, name, type}, inviter?, member_count, expires_at}`.
+Превью: `{code, guild: {id, name, icon?}, channel: {id, name, type}, inviter?, member_count, expires_at}`.
 Код: 8 символов `[A-Za-z0-9]`.
 
 События: `INVITE_CREATE`, `INVITE_DELETE` в топик сервера; gateway отдаёт их
@@ -304,7 +337,8 @@ Heartbeat нужно слать каждые `heartbeat_interval` (30 с); бе�
 | `MESSAGE_*` в канале сервера | тем, кто видит канал (`VIEW_CHANNEL`) |
 | `MESSAGE_*` в личке, `CHANNEL_*` личек, `CHANNEL_RECIPIENT_*` | участникам лички |
 | `RELATIONSHIP_*` | вам |
-| `USER_UPDATE` | вашим сессиям, когда изменился ваш аккаунт (сейчас — выбранный статус) |
+| `USER_UPDATE` | вашим сессиям, когда изменился ваш аккаунт (имя, «о себе», аватар, выбранный статус); полный пользователь |
+| `USER_PROFILE_UPDATE {user}` | участникам ваших серверов, когда изменились имя или аватар; публичный пользователь. Одно изменение приходит один раз, сколько бы общих серверов ни было |
 | `TYPING_START` | тем, кто видит канал; кроме вас самих |
 | `PRESENCE_UPDATE {user_id, status}` | друзьям и участникам общих серверов до 250 человек; одно изменение приходит один раз, даже если вы делите несколько серверов |
 

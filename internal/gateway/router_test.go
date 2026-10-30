@@ -391,3 +391,61 @@ func TestRoutePermissionsUpdate(t *testing.T) {
 		t.Fatalf("hidden channel still in the map: %v", p.ChannelPermissions)
 	}
 }
+
+// USER_PROFILE_UPDATE is written to every guild of the user without their
+// locks: the snapshot cursor does not apply to it, and the copies of one
+// change reach the client once.
+func TestRouteProfileUpdate(t *testing.T) {
+	f := newFixture()
+	second := newFixture()
+	snap2 := second.snapshot()
+	snap2.Member.UserID = f.me
+	first := f.snapshot()
+	first.Cursor = 100
+	profile := func(id uuid.UUID, name string) map[string]any {
+		return map[string]any{"user": map[string]any{"id": id, "username": "u", "display_name": name, "avatar": nil}}
+	}
+	at := func(topic string, id int64, data any) event {
+		e := ev(topic, events.UserProfileUpdate, data)
+		e.ID = id
+		return e
+	}
+	g1, g2 := events.GuildTopic(f.guildID), events.GuildTopic(second.guildID)
+	steps := []struct {
+		name string
+		in   event
+		want int
+	}{
+		{"older than the cursor still goes out", at(g1, 50, profile(f.other, "A")), 1},
+		{"its copy from the other guild", at(g2, 51, profile(f.other, "A")), 0},
+		{"a real change", at(g1, 120, profile(f.other, "B")), 1},
+		{"a change back", at(g2, 121, profile(f.other, "A")), 1},
+		{"another user with the same name", at(g1, 122, profile(f.owner, "A")), 1},
+		{"my own profile", at(g1, 123, profile(f.me, "Я")), 1},
+		{"from a guild I am not in", at(events.GuildTopic(uuid.New()), 124, profile(f.other, "C")), 0},
+		{"no user id", at(g1, 125, map[string]any{"user": map[string]any{"display_name": "x"}}), 0},
+		{"malformed", event{Subject: g1, Type: events.UserProfileUpdate, Data: json.RawMessage(`[1]`), ID: 126}, 0},
+	}
+	r := newRouter(f.me, f.authSID, fakeLoader{}, []guild.Snapshot{first, snap2}, nil)
+	for _, s := range steps {
+		res, err := r.route(t.Context(), s.in)
+		if err != nil {
+			t.Fatalf("%s: %v", s.name, err)
+		}
+		if len(res.out) != s.want {
+			t.Fatalf("%s: %d dispatches, want %d", s.name, len(res.out), s.want)
+		}
+		for _, d := range res.out {
+			if d.T != events.UserProfileUpdate || string(d.D) != string(s.in.Data) {
+				t.Fatalf("%s: dispatched %s %s", s.name, d.T, d.D)
+			}
+		}
+	}
+	// Leaving a guild forgets what was delivered, like for presence.
+	if _, err := r.route(t.Context(), ev(events.UserTopic(f.me), events.GuildDelete, map[string]any{"id": second.guildID})); err != nil {
+		t.Fatal(err)
+	}
+	if res, _ := r.route(t.Context(), at(g1, 130, profile(f.other, "A"))); len(res.out) != 1 {
+		t.Fatal("after leaving a guild a profile was suppressed by a stale record")
+	}
+}

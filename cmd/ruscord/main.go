@@ -27,6 +27,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/health"
 	"github.com/eastsidekillas/ruscord-core/internal/message"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/logx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/store"
@@ -91,6 +92,21 @@ func run() error {
 		}
 		return nil
 	})
+	var files *blob.Collector
+	if cfg.FilesEnabled() {
+		s3 := blob.NewS3(blob.S3Config{Endpoint: cfg.S3Endpoint, Region: cfg.S3Region, Bucket: cfg.S3Bucket,
+			AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey})
+		if cfg.IsDev() {
+			if err := s3.EnsureBucket(ctx); err != nil {
+				log.Warn("s3: could not create the bucket; is SeaweedFS up (make up)?", "err", err)
+			}
+		}
+		hc.Add("s3", s3.Ping)
+		files = blob.NewCollector(clients.PG, s3, log)
+		blob.Register(mux, s3, log)
+	} else {
+		log.Warn("RUSCORD_S3_ACCESS_KEY is not set: avatar and icon uploads are off")
+	}
 	hc.Register(mux)
 
 	// Modules register their routes here as they land (see docs/roadmap.md).
@@ -114,11 +130,16 @@ func run() error {
 			Signer:  signer,
 			Limiter: limiter,
 			Tickets: auth.NewTickets(clients.Redis),
+			Files:   files,
 		})
 		if err != nil {
 			return err
 		}
 		guilds := guild.NewService(clients.PG, svc, limiter)
+		svc.SetGuildIDs(guilds)
+		if files != nil {
+			guilds.WithFiles(files)
+		}
 		socials := social.NewService(clients.PG, svc, guilds, limiter)
 		eph := events.NewEphemeral(clients.NATS)
 		gwOpts := gateway.Options{AllowedOrigins: cfg.AllowedOrigins}
@@ -139,6 +160,9 @@ func run() error {
 				return err
 			}
 			go relay.Run(ctx)
+			if files != nil {
+				go files.Run(ctx, time.Minute)
+			}
 		}
 		if cfg.Has(config.RoleGateway) {
 			gw, err := gateway.New(ctx, gateway.Deps{Auth: svc, Guilds: guilds, Social: socials, Presence: pres,
