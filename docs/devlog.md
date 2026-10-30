@@ -88,6 +88,15 @@
 - Heartbeat без поля `d` закрывал соединение (4002); теперь это `null`.
 - Если клиент закрыл сокет кодом, который нельзя отправить в ответ (1005),
   сокет закрывается принудительно.
+- Живой прогон бинаря (Postgres, redis-server, nats-server 2.15.2) клиентом
+  «чёрным ящиком»: REST с cookie и `Origin`, WebSocket, вход по приглашению,
+  скрытый канал, RESUME после обрыва сети, закрытие по выходу из аккаунта,
+  1012 при остановке; и в одном процессе, и с `RUSCORD_ROLES=api` и
+  `RUSCORD_ROLES=gateway` в разных процессах. Нашёл потерю событий: после
+  пересоздания базы при живом стриме NATS id outbox повторялись, и relay с
+  `Nats-Msg-Id` = id молча терял события 2 минуты (окно дедупликации). Ключ
+  теперь id + `created_at`, id outbox едет в заголовке `Ruscord-Outbox-Id`
+  (тест `TestRelayNewDatabaseReusesIDs`, повторный живой прогон зелёный).
 - `make test-docker` (`scripts/test-docker.sh`): тесты с `-race` на Postgres 18
   из compose и golangci-lint версии CI в контейнерах, лог в `test-docker.log`.
   Нужен, чтобы проверять ветку на машине без Go и Postgres.

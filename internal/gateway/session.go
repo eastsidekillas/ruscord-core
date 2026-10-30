@@ -197,7 +197,7 @@ func (s *session) consume(ctx context.Context, r *router, next uint64) (uint64, 
 			s.srv.log.Warn("gateway: skipping event with invalid JSON", "subject", msg.Subject(), "seq", meta.Sequence.Stream)
 			continue
 		}
-		id, _ := strconv.ParseInt(msg.Headers().Get(jetstream.MsgIDHeader), 10, 64) // 0 if absent
+		id, _ := strconv.ParseInt(msg.Headers().Get(events.HeaderOutboxID), 10, 64) // 0 if absent
 		res, err := r.route(ctx, event{Subject: msg.Subject(), Type: msg.Headers().Get(events.HeaderType), Data: msg.Data(), ID: id})
 		if err != nil {
 			return next, err
