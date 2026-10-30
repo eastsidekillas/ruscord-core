@@ -3,6 +3,7 @@
 /dist/
 *.test
 coverage.out
+test-docker.log
 .DS_Store
 .idea/
 .vscode/

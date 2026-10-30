@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -56,6 +57,32 @@ type Event struct {
 	Topic string
 	Type  string
 	Data  any
+}
+
+// LatestIDs returns the id of the newest outbox row of each topic visible to
+// q; topics without rows are absent. Inside a snapshot transaction it marks
+// which events the snapshot already contains. Published rows are kept for an
+// hour (Relay.keep), far longer than a gateway snapshot replays.
+func LatestIDs(ctx context.Context, q querier, topics []string) (map[string]int64, error) {
+	rows, err := q.Query(ctx, `SELECT topic, max(id) FROM outbox WHERE topic = ANY($1) GROUP BY topic`, topics)
+	if err != nil {
+		return nil, fmt.Errorf("events: latest ids: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]int64, len(topics))
+	for rows.Next() {
+		var topic string
+		var id int64
+		if err := rows.Scan(&topic, &id); err != nil {
+			return nil, err
+		}
+		out[topic] = id
+	}
+	return out, rows.Err()
+}
+
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 type execer interface {

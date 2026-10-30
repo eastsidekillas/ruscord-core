@@ -29,4 +29,5 @@
   `internal/platform/...`. Это касается и тестов (общая обвязка БД, клиенты).
 - Секреты только из env. В dev всё слушает 127.0.0.1.
 - Комментарии в коде на английском, документация на русском.
-- Команды: `make test`, `make lint`, `make up`, `make run`.
+- Команды: `make test`, `make lint`, `make up`, `make run`; `make test-docker` —
+  тесты с Postgres 18 и линтер в Docker, как в CI, без локального Go.

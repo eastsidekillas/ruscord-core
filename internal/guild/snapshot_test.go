@@ -52,8 +52,20 @@ func TestSnapshots(t *testing.T) {
 		t.Fatalf("Full from snapshot differs from REST:\n got %s\nwant %s", got, want)
 	}
 
+	// The cursor marks the newest event of the guild the snapshot contains.
+	var latest int64
+	if err := e.PG.QueryRow(t.Context(), `SELECT max(id) FROM outbox WHERE topic = $1`, "guild."+first).Scan(&latest); err != nil {
+		t.Fatal(err)
+	}
+	if snap.Cursor == 0 || snap.Cursor != latest {
+		t.Fatalf("cursor = %d, want the newest guild event %d", snap.Cursor, latest)
+	}
+	if snaps[0].Cursor >= latest {
+		t.Fatalf("second guild's cursor %d must be its own, not the first guild's %d", snaps[0].Cursor, latest)
+	}
+
 	one, err := e.svc.Snapshot(t.Context(), bob.ID, uuid.MustParse(first))
-	if err != nil || one.Guild.ID.String() != first || len(one.Channels) != 3 {
+	if err != nil || one.Guild.ID.String() != first || len(one.Channels) != 3 || one.Cursor != latest {
 		t.Fatalf("single snapshot: %+v, %v", one, err)
 	}
 	stranger := e.User("stranger")

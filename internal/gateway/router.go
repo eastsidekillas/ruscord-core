@@ -21,6 +21,7 @@ type event struct {
 	Subject string
 	Type    string
 	Data    json.RawMessage
+	ID      int64 // outbox id (the stream message id); 0 when unknown
 }
 
 // dispatch is a DISPATCH for the client before it gets a sequence number.
@@ -139,8 +140,8 @@ func (r *router) userEvent(ctx context.Context, ev event) (routed, error) {
 		}
 		// The payload was rendered when the event was written; the router
 		// needs every channel, so it loads the guild as it is now and
-		// renders GUILD_CREATE from that. Later events replay on top of it
-		// and converge, because each carries whole objects.
+		// renders GUILD_CREATE from that. Guild events the fresh snapshot
+		// already contains are skipped by its cursor (see guildEvent).
 		snap, err := r.loader.Snapshot(ctx, r.user, p.ID)
 		if errors.Is(err, httpx.ErrNotFound) {
 			return routed{}, nil // already left; GUILD_DELETE follows
@@ -187,6 +188,9 @@ func (r *router) userEvent(ctx context.Context, ev event) (routed, error) {
 }
 
 func (r *router) guildEvent(guildID uuid.UUID, g *guildState, ev event) (routed, error) {
+	if ev.ID != 0 && ev.ID <= g.snap.Cursor && !isMessage(ev.Type) {
+		return routed{}, nil // the snapshot already has this change
+	}
 	switch ev.Type {
 	case events.GuildUpdate:
 		var p guild.Guild

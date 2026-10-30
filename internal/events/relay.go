@@ -26,6 +26,9 @@ const (
 
 	// HeaderType carries the event type (DISPATCH.t) next to the JSON payload.
 	HeaderType = "Ruscord-Event-Type"
+	// HeaderOutboxID carries the outbox row id. The gateway compares it with
+	// a snapshot's cursor (docs/adr/0016-gateway.md).
+	HeaderOutboxID = "Ruscord-Outbox-Id"
 
 	notifyChannel = "outbox"
 	// relayLockKey is the advisory lock that keeps one relay active per database.
@@ -51,8 +54,9 @@ func EnsureStream(ctx context.Context, js jetstream.JetStream) (jetstream.Stream
 //
 // Ordering: one relay holds an advisory lock per batch, so rows go out in
 // commit-visible id order even with several API processes. Delivery: a row
-// is marked published only after JetStream acknowledged it; the outbox id is
-// the Nats-Msg-Id, so a retry after a crash is deduplicated by the stream.
+// is marked published only after JetStream acknowledged it; the outbox id and
+// creation time form the Nats-Msg-Id, so a retry after a crash is
+// deduplicated by the stream.
 type Relay struct {
 	pg    *pgxpool.Pool
 	js    jetstream.JetStream
@@ -135,6 +139,14 @@ type row struct {
 	topic   string
 	typ     string
 	payload []byte
+	created time.Time
+}
+
+// msgID is the stream's deduplication key. A retry of the same row repeats
+// it; a row of a recreated or restored database that reuses the id has
+// another created_at, so it is not mistaken for a duplicate.
+func (x row) msgID() string {
+	return strconv.FormatInt(x.id, 10) + "-" + strconv.FormatInt(x.created.UnixNano(), 10)
 }
 
 // PublishBatch publishes up to one batch and reports how many rows it sent.
@@ -150,13 +162,13 @@ func (r *Relay) PublishBatch(ctx context.Context) (int, error) {
 			return nil
 		}
 		rows, err := tx.Query(ctx,
-			`SELECT id, topic, type, payload FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT $1`, r.batch)
+			`SELECT id, topic, type, payload, created_at FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT $1`, r.batch)
 		if err != nil {
 			return err
 		}
 		batch, err := pgx.CollectRows(rows, func(cr pgx.CollectableRow) (row, error) {
 			var x row
-			err := cr.Scan(&x.id, &x.topic, &x.typ, &x.payload)
+			err := cr.Scan(&x.id, &x.topic, &x.typ, &x.payload, &x.created)
 			return x, err
 		})
 		if err != nil || len(batch) == 0 {
@@ -168,7 +180,8 @@ func (r *Relay) PublishBatch(ctx context.Context) (int, error) {
 		for _, x := range batch {
 			msg := &nats.Msg{Subject: x.topic, Data: x.payload, Header: nats.Header{}}
 			msg.Header.Set(HeaderType, x.typ)
-			if _, err := r.js.PublishMsg(ctx, msg, jetstream.WithMsgID(strconv.FormatInt(x.id, 10))); err != nil {
+			msg.Header.Set(HeaderOutboxID, strconv.FormatInt(x.id, 10))
+			if _, err := r.js.PublishMsg(ctx, msg, jetstream.WithMsgID(x.msgID())); err != nil {
 				if len(ids) == 0 {
 					return fmt.Errorf("publish %d: %w", x.id, err)
 				}

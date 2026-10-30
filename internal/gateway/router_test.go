@@ -288,3 +288,43 @@ func TestRouteLoaderFailureEndsSession(t *testing.T) {
 		t.Fatal("a failed load must be an error, not a silently skipped guild")
 	}
 }
+
+// Events already contained in a snapshot must not be replayed on top of it.
+// Mixing an old channel state with the newer roles of the snapshot could
+// reveal a channel the user could see neither then nor now: here "secret"
+// used to be open to mods, then closed to them, and only then did the user
+// become a mod. The old CHANNEL_UPDATE (outbox id 5) is older than the
+// snapshot (cursor 7) and is skipped; newer events apply; messages are not
+// skipped, they change no state.
+func TestRouteSkipsEventsInSnapshot(t *testing.T) {
+	f := newFixture()
+	gt := events.GuildTopic(f.guildID)
+	snap := f.snapshot(f.modRole)
+	closedToMods := f.secret
+	closedToMods.Overwrites = []guild.Overwrite{
+		{Type: perm.TargetRole, ID: f.guildID, Deny: perm.ViewChannel},
+		{Type: perm.TargetRole, ID: f.modRole, Deny: perm.ViewChannel},
+	}
+	snap.Channels[1] = closedToMods
+	snap.Cursor = 7
+	r := newRouter(f.me, f.authSID, fakeLoader{}, []guild.Snapshot{snap}, nil)
+
+	old := ev(gt, events.ChannelUpdate, f.secret) // still open to mods
+	old.ID = 5
+	if res, _ := r.route(t.Context(), old); len(res.out) != 0 {
+		t.Fatalf("event older than the snapshot replayed: %v", got(res.out))
+	}
+	if _, visible := r.guilds[f.guildID].view.Channels[f.secret.ID]; visible {
+		t.Fatal("old event changed the snapshot state")
+	}
+	msg := ev(gt, events.MessageCreate, map[string]any{"channel_id": f.general.ID})
+	msg.ID = 6
+	if res, _ := r.route(t.Context(), msg); len(res.out) != 1 {
+		t.Fatal("a message must not be skipped by the snapshot cursor")
+	}
+	newer := ev(gt, events.ChannelUpdate, f.secret)
+	newer.ID = 8
+	if res, _ := r.route(t.Context(), newer); !slices.Equal(got(res.out), []string{events.ChannelCreate + ":" + f.secret.ID.String()}) {
+		t.Fatalf("event newer than the snapshot: %v", got(res.out))
+	}
+}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/events"
@@ -375,5 +376,82 @@ func TestResumeReplacesLiveConnection(t *testing.T) {
 	h.publish(events.GuildTopic(f.guildID), events.MessageCreate, map[string]any{"channel_id": f.general.ID, "content": "still here"})
 	if fr := r.expectDispatch(events.MessageCreate); fr.S != 2 {
 		t.Fatalf("s = %d after takeover", fr.S)
+	}
+}
+
+// An event that is not JSON is skipped: it must neither crash the node (the
+// frame encoder would panic on it) nor stop the session.
+func TestInvalidEventIsSkipped(t *testing.T) {
+	h := newHarness(t, Options{})
+	p := h.user()
+	c, _ := h.connect(p)
+	msg := &nats.Msg{Subject: events.UserTopic(p.UserID), Data: []byte("{not json"), Header: nats.Header{}}
+	msg.Header.Set(events.HeaderType, events.RelationshipAdd)
+	if _, err := h.js.PublishMsg(t.Context(), msg); err != nil {
+		t.Fatal(err)
+	}
+	h.publish(events.UserTopic(p.UserID), events.RelationshipAdd, map[string]any{"id": p.UserID, "type": 3})
+	if fr := c.expectDispatch(events.RelationshipAdd); fr.S != 2 {
+		t.Fatalf("s = %d, want 2: the skipped event must not take a number", fr.S)
+	}
+}
+
+// A heartbeat without d is the same as d: null.
+func TestHeartbeatWithoutData(t *testing.T) {
+	h := newHarness(t, Options{})
+	c, _ := h.connect(h.user())
+	c.sendRaw(websocket.MessageText, []byte(`{"op":1}`))
+	c.expectOp(opHeartbeatAck)
+}
+
+// Abandoned sessions do not lock a user out: at the cap the oldest detached
+// one makes room (and can no longer be resumed); live sessions still count.
+func TestSessionCapEvictsDetached(t *testing.T) {
+	h := newHarness(t, Options{MaxSessionsPerUser: 2})
+	p := h.user()
+	other := auth.Principal{UserID: p.UserID, SessionID: uuid.New()}
+	first, firstReady := h.connect(p)
+	h.clock.Add(time.Second)
+	second, _ := h.connect(other)
+	_ = first.ws.Close(4000, "crash")
+	waitFor(t, func() bool {
+		ss := h.srv.lookup(firstReady.SessionID)
+		ss.mu.Lock()
+		defer ss.mu.Unlock()
+		return ss.conn == nil
+	})
+
+	h.connect(p) // takes the place of the detached first session
+	r := h.dial("?v=1")
+	r.expectOp(opHello)
+	r.send(opResume, map[string]any{"ticket": h.ticket(p), "session_id": firstReady.SessionID, "seq": 1})
+	r.expectClose(closeSessionInvalid)
+
+	// Two live sessions: nothing to evict.
+	extra := h.dial("?v=1")
+	extra.expectOp(opHello)
+	extra.send(opIdentify, map[string]string{"ticket": h.ticket(p)})
+	extra.expectClose(closeTooManySessions)
+	second.send(opHeartbeat, nil)
+	second.expectOp(opHeartbeatAck)
+}
+
+// Ending a session closes a connection attached at that moment, even when
+// the caller expected none: the janitor or an eviction may race a RESUME,
+// and a socket left open on an ended session would never get events again.
+func TestEndClosesAttachedConnection(t *testing.T) {
+	h := newHarness(t, Options{})
+	_, ready := h.connect(h.user())
+	ss := h.srv.lookup(ready.SessionID)
+	c := newConn(nil, 4)
+	ss.mu.Lock()
+	ss.conn = c // the RESUME that slipped in
+	ss.mu.Unlock()
+	ss.end(0, "")
+	if c.closeCode() != closeSessionInvalid {
+		t.Fatalf("close code %d, want %d", c.closeCode(), closeSessionInvalid)
+	}
+	if h.srv.lookup(ready.SessionID) != nil {
+		t.Fatal("ended session still registered")
 	}
 }

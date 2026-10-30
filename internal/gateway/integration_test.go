@@ -27,9 +27,15 @@ import (
 type stack struct {
 	*apitest.Env
 	wsURL string
+	relay *events.Relay
 }
 
-func newStack(t *testing.T) *stack {
+// newStack runs the relay in the background, like the API process does.
+func newStack(t *testing.T) *stack { return newStackRelay(t, true) }
+
+// newStackRelay with run=false leaves publishing to the test (flush), to
+// reproduce a relay that lags behind the database.
+func newStackRelay(t *testing.T, run bool) *stack {
 	t.Helper()
 	e := apitest.New(t)
 	nc := natstest.New(t)
@@ -52,10 +58,32 @@ func newStack(t *testing.T) *stack {
 	}
 	gw.Register(e.Mux)
 	relayDone, gwDone := make(chan struct{}), make(chan struct{})
-	go func() { relay.Run(ctx); close(relayDone) }()
+	go func() {
+		defer close(relayDone)
+		if run {
+			relay.Run(ctx)
+		}
+	}()
 	go func() { gw.Run(ctx); close(gwDone) }()
 	t.Cleanup(func() { cancel(); <-relayDone; <-gwDone })
-	return &stack{Env: e, wsURL: "ws" + strings.TrimPrefix(e.URL(), "http") + "/gateway?v=1"}
+	return &stack{Env: e, wsURL: "ws" + strings.TrimPrefix(e.URL(), "http") + "/gateway?v=1", relay: relay}
+}
+
+// flush publishes everything waiting in the outbox. The relay's advisory
+// lock is per database, so a relay of a parallel test may hold it: retry
+// until this schema's outbox is empty, not until one batch sends nothing.
+func (s *stack) flush() {
+	s.T.Helper()
+	waitFor(s.T, func() bool {
+		if _, err := s.relay.PublishBatch(s.T.Context()); err != nil {
+			s.T.Fatal(err)
+		}
+		var left int
+		if err := s.PG.QueryRow(s.T.Context(), `SELECT count(*) FROM outbox WHERE published_at IS NULL`).Scan(&left); err != nil {
+			s.T.Fatal(err)
+		}
+		return left == 0
+	})
 }
 
 // connect opens a gateway connection for u with a real ticket.
@@ -206,3 +234,51 @@ func TestGatewayClosedOnLogout(t *testing.T) {
 }
 
 func permString(p perm.Permissions) string { return strconv.FormatUint(uint64(p), 10) }
+
+// The relay lags: changes are committed but not yet published when Bob
+// connects, so READY already contains them and the stream replays them
+// afterwards. Replaying "secret open to mods" on top of a snapshot where Bob
+// is a mod would reveal a channel he could see neither then nor now; the
+// snapshot cursor (outbox id) makes the gateway skip what READY contains.
+func TestGatewayLaggingRelayDoesNotLeak(t *testing.T) {
+	s := newStackRelay(t, false)
+	owner, bob := s.User("owner"), s.User("bob")
+	g := apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/guilds", map[string]any{"name": "Сервер"}))
+	gid := apitest.Str(g["id"])
+	general := apitest.Str(apitest.Obj(apitest.List(g["channels"])[0])["id"])
+	code := apitest.Str(apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/channels/"+general+"/invites", map[string]any{}))["code"])
+	bob.Expect(http.StatusOK, "POST", "/api/v1/invites/"+code, nil)
+	secret := apitest.Str(apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/guilds/"+gid+"/channels",
+		map[string]any{"name": "secret", "type": 0}))["id"])
+	owner.Expect(http.StatusOK, "PUT", "/api/v1/channels/"+secret+"/permissions/"+gid,
+		map[string]any{"type": 1, "deny": permString(perm.ViewChannel)})
+	role := apitest.Str(apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/guilds/"+gid+"/roles",
+		map[string]any{"name": "mod"}))["id"])
+	s.flush() // everything so far is history before Bob connects
+
+	// Unpublished: open to mods, close to mods, make Bob a mod.
+	owner.Expect(http.StatusOK, "PUT", "/api/v1/channels/"+secret+"/permissions/"+role,
+		map[string]any{"type": 1, "allow": permString(perm.ViewChannel)})
+	owner.Expect(http.StatusOK, "PUT", "/api/v1/channels/"+secret+"/permissions/"+role,
+		map[string]any{"type": 1, "deny": permString(perm.ViewChannel)})
+	owner.Expect(http.StatusNoContent, "PUT", "/api/v1/guilds/"+gid+"/members/"+bob.ID.String()+"/roles/"+role, nil)
+
+	bobWS, ready := s.connect(bob)
+	if len(ready.Guilds) != 1 || len(ready.Guilds[0].Channels) != 2 {
+		t.Fatalf("READY channels: %+v", ready.Guilds)
+	}
+	owner.Expect(http.StatusCreated, "POST", "/api/v1/channels/"+general+"/messages", map[string]any{"content": "маркер"})
+	s.flush()
+	// The replayed changes are all in READY: the first thing Bob gets is the
+	// message after them.
+	if f := bobWS.expectDispatch(events.MessageCreate); !bytes.Contains(f.D, []byte("маркер")) {
+		t.Fatalf("first frame after READY: %s", f.D)
+	}
+	// Changes after READY still arrive.
+	owner.Expect(http.StatusOK, "PUT", "/api/v1/channels/"+secret+"/permissions/"+role,
+		map[string]any{"type": 1, "allow": permString(perm.ViewChannel)})
+	s.flush()
+	if f := bobWS.expectDispatch(events.ChannelCreate); idOf(f) != secret {
+		t.Fatalf("change after READY: %s", f.D)
+	}
+}

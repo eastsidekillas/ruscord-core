@@ -144,3 +144,30 @@ func TestRelayRunWakesOnNotify(t *testing.T) {
 		t.Fatalf("type = %q", msg.Headers().Get(HeaderType))
 	}
 }
+
+// A database recreated or restored from a backup hands out the same outbox
+// ids again while the stream still remembers them. The new events must not
+// be dropped as duplicates; the outbox id still travels in its own header.
+func TestRelayNewDatabaseReusesIDs(t *testing.T) {
+	pg, r, st := setup(t)
+	write(t, pg, Event{Topic: UserTopic(uuid.New()), Type: GuildCreate, Data: map[string]int{"n": 1}})
+	if n, err := r.PublishBatch(t.Context()); err != nil || n != 1 {
+		t.Fatalf("first publish = %d, %v", n, err)
+	}
+	if _, err := pg.Exec(t.Context(), `DELETE FROM outbox; ALTER SEQUENCE outbox_id_seq RESTART`); err != nil {
+		t.Fatal(err)
+	}
+	write(t, pg, Event{Topic: UserTopic(uuid.New()), Type: GuildCreate, Data: map[string]int{"n": 2}})
+	if n, err := r.PublishBatch(t.Context()); err != nil || n != 1 {
+		t.Fatalf("publish after the reset = %d, %v", n, err)
+	}
+	msgs := messages(t, st)
+	if len(msgs) != 2 || string(msgs[1].Data) != `{"n": 2}` {
+		t.Fatalf("stream has %d messages, the event after the reset was dropped as a duplicate", len(msgs))
+	}
+	for i, m := range msgs {
+		if m.Header.Get(HeaderOutboxID) != "1" {
+			t.Fatalf("message %d outbox id header = %q, want 1", i, m.Header.Get(HeaderOutboxID))
+		}
+	}
+}
