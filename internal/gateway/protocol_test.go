@@ -14,6 +14,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
+	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/natstest"
 )
 
@@ -140,6 +141,9 @@ func TestReadyAndHeartbeat(t *testing.T) {
 	}
 	if len(ready.Guilds) != 1 || len(ready.Guilds[0].Channels) != 2 {
 		t.Fatalf("READY guilds = %+v, want one guild without the hidden channel", ready.Guilds)
+	}
+	if cp := ready.Guilds[0].ChannelPermissions; len(cp) != 2 || !cp[f.general.ID].Has(perm.SendMessages) || cp[f.secret.ID] != 0 {
+		t.Fatalf("READY channel_permissions = %v, want the two visible channels", cp)
 	}
 	c.send(opHeartbeat, 1)
 	c.expectOp(opHeartbeatAck)

@@ -91,6 +91,10 @@ attachments, read_states, relationships, invites, calls, outbox
 интерфейсы; своих таблиц нет. Отзыв сессии входа пишет в outbox внутреннее
 событие `SESSION_REVOKE`.
 
+Права для интерфейса считает сервер (ADR-0017): объект сервера несёт
+`channel_permissions`, а gateway при их изменении присылает
+`GUILD_PERMISSIONS_UPDATE`. Клиент правила прав не реализует.
+
 ## Права
 
 Пакет `internal/perm` (ADR-0011), чистые функции без БД:

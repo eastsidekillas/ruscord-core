@@ -99,6 +99,19 @@ func (s *stack) connect(u *apitest.User) (*wsClient, readyData) {
 	return c, r
 }
 
+// channelPerms reads the next frame, which must be GUILD_PERMISSIONS_UPDATE,
+// and returns the permissions per channel id.
+func channelPerms(c *wsClient) map[string]perm.Permissions {
+	c.t.Helper()
+	var p struct {
+		ChannelPermissions map[string]perm.Permissions `json:"channel_permissions"`
+	}
+	if err := json.Unmarshal(c.expectDispatch(typePermissionsUpdate).D, &p); err != nil {
+		c.t.Fatal(err)
+	}
+	return p.ChannelPermissions
+}
+
 func idOf(f frame) string {
 	var p struct {
 		ID string `json:"id"`
@@ -136,8 +149,14 @@ func TestGatewayEndToEnd(t *testing.T) {
 	if f := bobWS.expectDispatch(events.ChannelCreate); idOf(f) != secret {
 		t.Fatal("CHANNEL_CREATE of the new channel expected")
 	}
+	if cp := channelPerms(bobWS); !cp[secret].Has(perm.SendMessages) {
+		t.Fatalf("permissions in the new channel: %v", cp)
+	}
 	if f := bobWS.expectDispatch(events.ChannelDelete); idOf(f) != secret {
 		t.Fatal("CHANNEL_DELETE when the channel was hidden expected")
+	}
+	if cp := channelPerms(bobWS); len(cp) != 2 || cp[secret] != 0 {
+		t.Fatalf("permissions after hiding: %v", cp)
 	}
 	owner.Expect(http.StatusOK, "PATCH", "/api/v1/channels/"+secret, map[string]any{"name": "raid-plans"})
 	owner.Expect(http.StatusCreated, "POST", "/api/v1/channels/"+secret+"/messages", map[string]any{"content": "тайна"})
@@ -158,6 +177,21 @@ func TestGatewayEndToEnd(t *testing.T) {
 	f = bobWS.expectDispatch(events.ChannelCreate)
 	if idOf(f) != secret || !bytes.Contains(f.D, []byte("raid-plans")) {
 		t.Fatalf("revealed channel: %s", f.D)
+	}
+	if cp := channelPerms(bobWS); len(cp) != 3 || !cp[secret].Has(perm.ViewChannel) {
+		t.Fatalf("permissions after the role: %v", cp)
+	}
+
+	// Read-only for everyone in general: Bob learns he cannot write there,
+	// and nothing else about the channel changes for him.
+	owner.Expect(http.StatusOK, "PUT", "/api/v1/channels/"+general+"/permissions/"+gid,
+		map[string]any{"type": 1, "deny": permString(perm.SendMessages)})
+	bobWS.expectDispatch(events.ChannelUpdate)
+	if cp := channelPerms(bobWS); cp[general].Has(perm.SendMessages) || !cp[general].Has(perm.ReadMessageHistory) {
+		t.Fatalf("general after the overwrite: %v", cp[general])
+	}
+	if st, _ := bob.Do("POST", "/api/v1/channels/"+general+"/messages", map[string]any{"content": "нельзя"}); st != http.StatusForbidden {
+		t.Fatalf("send to a read-only channel: %d, the server must agree with what the gateway told Bob", st)
 	}
 	owner.Expect(http.StatusCreated, "POST", "/api/v1/channels/"+secret+"/messages", map[string]any{"content": "теперь видно"})
 	if f := bobWS.expectDispatch(events.MessageCreate); !bytes.Contains(f.D, []byte("теперь видно")) {

@@ -116,6 +116,7 @@ func TestRoute(t *testing.T) {
 	hideGeneral.Overwrites = []guild.Overwrite{{Type: perm.TargetRole, ID: f.guildID, Deny: perm.ViewChannel}}
 	noView := f.roles(perm.DefaultEveryone &^ perm.ViewChannel)
 	invite := map[string]any{"code": "abcdefgh", "guild_id": f.guildID, "channel_id": f.general.ID}
+	pu := typePermissionsUpdate + ":-" // permissions changed; the payload is checked in TestRoutePermissionsUpdate
 
 	cases := []struct {
 		name        string
@@ -144,30 +145,30 @@ func TestRoute(t *testing.T) {
 		{name: "channel update stays visible", in: ev(gt, events.ChannelUpdate, f.general),
 			want: []string{events.ChannelUpdate + ":" + f.general.ID.String()}},
 		{name: "overwrite hides a channel", in: ev(gt, events.ChannelUpdate, hideGeneral),
-			want: []string{events.ChannelDelete + ":" + f.general.ID.String()}},
+			want: []string{events.ChannelDelete + ":" + f.general.ID.String(), pu}},
 		{name: "overwrite reveals a channel", in: ev(gt, events.ChannelUpdate, openSecret),
-			want: []string{events.ChannelCreate + ":" + f.secret.ID.String()}},
+			want: []string{events.ChannelCreate + ":" + f.secret.ID.String(), pu}},
 		{name: "hidden channel stays hidden", in: ev(gt, events.ChannelUpdate, f.secret)},
 		{name: "new hidden channel is not announced", in: ev(gt, events.ChannelCreate, hiddenNew)},
 		{name: "new visible channel", in: ev(gt, events.ChannelCreate, guild.Channel{ID: f.dm, GuildID: f.guildID, Overwrites: []guild.Overwrite{}}),
-			want: []string{events.ChannelCreate + ":" + f.dm.String()}},
+			want: []string{events.ChannelCreate + ":" + f.dm.String(), pu}},
 		{name: "delete of a visible channel", in: ev(gt, events.ChannelDelete, map[string]any{"id": f.general.ID, "guild_id": f.guildID}),
-			want: []string{events.ChannelDelete + ":" + f.general.ID.String()}},
+			want: []string{events.ChannelDelete + ":" + f.general.ID.String(), pu}},
 		{name: "delete of a hidden channel is dropped", in: ev(gt, events.ChannelDelete, map[string]any{"id": f.secret.ID, "guild_id": f.guildID})},
 
 		// roles and members change what is visible
 		{name: "everyone loses VIEW_CHANNEL", in: ev(gt, events.RoleUpdate, map[string]any{"guild_id": f.guildID, "roles": noView}),
-			want: []string{events.RoleUpdate + ":-", events.ChannelDelete + ":" + f.general.ID.String(), events.ChannelDelete + ":" + f.voice.ID.String()}},
+			want: []string{events.RoleUpdate + ":-", events.ChannelDelete + ":" + f.general.ID.String(), events.ChannelDelete + ":" + f.voice.ID.String(), pu}},
 		{name: "role list without changes in view", in: ev(gt, events.RoleCreate, map[string]any{"guild_id": f.guildID, "roles": f.roles(perm.DefaultEveryone)}),
 			want: []string{events.RoleCreate + ":-"}},
 		{name: "I get the mod role", in: ev(gt, events.MemberUpdate, f.member(f.modRole)),
-			want: []string{events.MemberUpdate + ":-", events.ChannelCreate + ":" + f.secret.ID.String()}},
+			want: []string{events.MemberUpdate + ":-", events.ChannelCreate + ":" + f.secret.ID.String(), pu}},
 		{name: "I lose the mod role", roles: []uuid.UUID{f.modRole}, in: ev(gt, events.MemberUpdate, f.member()),
-			want: []string{events.MemberUpdate + ":-", events.ChannelDelete + ":" + f.secret.ID.String()}},
+			want: []string{events.MemberUpdate + ":-", events.ChannelDelete + ":" + f.secret.ID.String(), pu}},
 		{name: "someone else gets the mod role", in: ev(gt, events.MemberUpdate, guild.Member{GuildID: f.guildID, UserID: f.other, RoleIDs: []uuid.UUID{f.modRole}}),
 			want: []string{events.MemberUpdate + ":-"}},
 		{name: "I become the owner", in: ev(gt, events.GuildUpdate, guild.Guild{ID: f.guildID, Name: "g", OwnerID: f.me}),
-			want: []string{events.GuildUpdate + ":" + f.guildID.String(), events.ChannelCreate + ":" + f.secret.ID.String()}},
+			want: []string{events.GuildUpdate + ":" + f.guildID.String(), events.ChannelCreate + ":" + f.secret.ID.String(), pu}},
 		{name: "member add", in: ev(gt, events.MemberAdd, guild.Member{GuildID: f.guildID, UserID: f.other}), want: []string{events.MemberAdd + ":-"}},
 		{name: "member remove", in: ev(gt, events.MemberRemove, map[string]any{"guild_id": f.guildID, "user_id": f.other}), want: []string{events.MemberRemove + ":-"}},
 
@@ -324,7 +325,69 @@ func TestRouteSkipsEventsInSnapshot(t *testing.T) {
 	}
 	newer := ev(gt, events.ChannelUpdate, f.secret)
 	newer.ID = 8
-	if res, _ := r.route(t.Context(), newer); !slices.Equal(got(res.out), []string{events.ChannelCreate + ":" + f.secret.ID.String()}) {
+	if res, _ := r.route(t.Context(), newer); !slices.Equal(got(res.out), []string{events.ChannelCreate + ":" + f.secret.ID.String(), typePermissionsUpdate + ":-"}) {
 		t.Fatalf("event newer than the snapshot: %v", got(res.out))
+	}
+}
+
+// GUILD_PERMISSIONS_UPDATE carries the recomputed permissions, replaces
+// them as a whole (a channel that became hidden is absent), and is sent
+// only when something changed.
+func TestRoutePermissionsUpdate(t *testing.T) {
+	f := newFixture()
+	gt := events.GuildTopic(f.guildID)
+	r := newRouter(f.me, f.authSID, fakeLoader{}, []guild.Snapshot{f.snapshot()}, nil)
+	decode := func(res routed) permissionsData {
+		t.Helper()
+		last := res.out[len(res.out)-1]
+		if last.T != typePermissionsUpdate {
+			t.Fatalf("last dispatch %s, want %s", last.T, typePermissionsUpdate)
+		}
+		var p permissionsData
+		if err := json.Unmarshal(last.D, &p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// Becoming a mod adds MANAGE_GUILD and opens "secret".
+	res, err := r.route(t.Context(), ev(gt, events.MemberUpdate, f.member(f.modRole)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := decode(res)
+	if p.GuildID != f.guildID || p.Permissions != perm.DefaultEveryone|perm.ManageGuild {
+		t.Fatalf("guild permissions %v, want @everyone defaults plus MANAGE_GUILD", p.Permissions)
+	}
+	if len(p.ChannelPermissions) != 3 || !p.ChannelPermissions[f.secret.ID].Has(perm.ViewChannel|perm.SendMessages) {
+		t.Fatalf("channel permissions %v, want all three channels, secret writable", p.ChannelPermissions)
+	}
+	if p.ChannelPermissions[f.voice.ID].Has(perm.MentionEveryone) {
+		t.Fatal("permissions must come from internal/perm, not be invented")
+	}
+
+	// Unchanged permissions send nothing extra.
+	res, _ = r.route(t.Context(), ev(gt, events.MemberUpdate, f.member(f.modRole)))
+	if slices.Contains(got(res.out), typePermissionsUpdate+":-") {
+		t.Fatalf("update without a change: %v", got(res.out))
+	}
+	res, _ = r.route(t.Context(), ev(gt, events.MessageCreate, map[string]any{"channel_id": f.general.ID}))
+	if len(res.out) != 1 {
+		t.Fatalf("a message must not carry a permissions update: %v", got(res.out))
+	}
+
+	// Write access taken away in one channel: only that value changes, and
+	// the hidden-again "secret" disappears from the map.
+	readOnly := f.general
+	readOnly.Overwrites = []guild.Overwrite{{Type: perm.TargetRole, ID: f.guildID, Deny: perm.SendMessages}}
+	res, _ = r.route(t.Context(), ev(gt, events.ChannelUpdate, readOnly))
+	p = decode(res)
+	if p.ChannelPermissions[f.general.ID].Has(perm.SendMessages) || !p.ChannelPermissions[f.general.ID].Has(perm.ViewChannel) {
+		t.Fatalf("general = %v, want readable but not writable", p.ChannelPermissions[f.general.ID])
+	}
+	res, _ = r.route(t.Context(), ev(gt, events.MemberUpdate, f.member()))
+	p = decode(res)
+	if _, ok := p.ChannelPermissions[f.secret.ID]; ok || len(p.ChannelPermissions) != 2 {
+		t.Fatalf("hidden channel still in the map: %v", p.ChannelPermissions)
 	}
 }

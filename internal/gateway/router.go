@@ -187,10 +187,23 @@ func (r *router) userEvent(ctx context.Context, ev event) (routed, error) {
 	return routed{}, nil
 }
 
+// guildEvent applies an event of a guild's topic. Whenever it changes what
+// the user may do in the guild, GUILD_PERMISSIONS_UPDATE follows the event's
+// own dispatches with the new values, so clients never compute permissions
+// (docs/adr/0017-client-permissions.md).
 func (r *router) guildEvent(guildID uuid.UUID, g *guildState, ev event) (routed, error) {
 	if ev.ID != 0 && ev.ID <= g.snap.Cursor && !isMessage(ev.Type) {
 		return routed{}, nil // the snapshot already has this change
 	}
+	before := g.view
+	res, err := r.applyGuildEvent(guildID, g, ev)
+	if err == nil && r.guilds[guildID] == g && !g.view.Equal(before) {
+		res.out = append(res.out, g.permissionsUpdate())
+	}
+	return res, err
+}
+
+func (r *router) applyGuildEvent(guildID uuid.UUID, g *guildState, ev event) (routed, error) {
 	switch ev.Type {
 	case events.GuildUpdate:
 		var p guild.Guild
@@ -281,6 +294,20 @@ func (r *router) guildEvent(guildID uuid.UUID, g *guildState, ev event) (routed,
 // shape as a real CHANNEL_DELETE, so the client handles both the same way.
 func channelGone(guildID, channelID uuid.UUID) dispatch {
 	return dispatch{T: events.ChannelDelete, D: mustJSON(map[string]uuid.UUID{"id": channelID, "guild_id": guildID})}
+}
+
+// permissionsData is the payload of GUILD_PERMISSIONS_UPDATE: the guild-wide
+// permissions and those in every visible channel, replacing earlier values.
+type permissionsData struct {
+	GuildID            uuid.UUID                      `json:"guild_id"`
+	Permissions        perm.Permissions               `json:"permissions"`
+	ChannelPermissions map[uuid.UUID]perm.Permissions `json:"channel_permissions"`
+}
+
+func (g *guildState) permissionsUpdate() dispatch {
+	return dispatch{T: typePermissionsUpdate, D: mustJSON(permissionsData{
+		GuildID: g.snap.Guild.ID, Permissions: g.view.Base, ChannelPermissions: g.view.Channels,
+	})}
 }
 
 // guildState is one guild of a session: its snapshot and the member's view.
