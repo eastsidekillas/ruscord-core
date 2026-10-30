@@ -1,7 +1,7 @@
 COMPOSE := docker compose --env-file .env -f deploy/docker-compose.yml
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: run build test lint test-docker up up-app down logs env backup
+.PHONY: run build test lint test-docker up up-app up-all down logs env backup
 
 env: ## create .env with random local secrets (does not overwrite)
 	@if [ -f .env ]; then echo ".env already exists"; else ./scripts/gen-env.sh > .env && echo "wrote .env"; fi
@@ -12,8 +12,11 @@ up: ## start local infrastructure
 up-app: ## infrastructure + ruscord in a container
 	$(COMPOSE) --profile app up -d --build
 
+up-all: ## infrastructure + ruscord + the web client (ruscord-fe next to this repo) on http://localhost:8081
+	$(COMPOSE) --profile app --profile web up -d --build
+
 down:
-	$(COMPOSE) --profile app down
+	$(COMPOSE) --profile app --profile web down
 
 logs:
 	$(COMPOSE) logs -f

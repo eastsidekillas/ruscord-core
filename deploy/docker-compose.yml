@@ -1,6 +1,7 @@
 # Local development stack. Everything binds to 127.0.0.1 only.
 #   make up        – start infrastructure
 #   make up-app    – infrastructure + the ruscord binary in a container
+#   make up-all    – all of it + the web client (../../ruscord-fe) on http://localhost:8081
 # Secrets come from ../.env (copy .env.example). Never commit .env.
 name: ruscord
 
@@ -74,6 +75,13 @@ services:
       RUSCORD_LIVEKIT_URL: ws://livekit:7880
       RUSCORD_S3_ENDPOINT: http://seaweedfs:8333
       RUSCORD_METRICS_ADDR: 0.0.0.0:9090
+      # The client from `ng serve` (4200) and the web container (8081).
+      RUSCORD_ALLOWED_ORIGINS: http://localhost:4200,http://localhost:8081
+      # The web container's nginx is a proxy on the compose network (ADR-0020).
+      RUSCORD_TRUSTED_PROXIES: 172.16.0.0/12,192.168.0.0/16
+    networks:
+      default:
+        aliases: [core]   # the name the client's nginx proxies to
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:9090:9090"   # /metrics, never behind the public proxy
@@ -82,6 +90,16 @@ services:
       valkey: { condition: service_healthy }
       nats: { condition: service_started }
       seaweedfs: { condition: service_started }
+
+  web:
+    # The client (ruscord-fe) built and served by nginx, which proxies /api,
+    # /gateway and /cdn to the core on the same origin. Expects ruscord-fe next
+    # to ruscord-core; RUSCORD_FE_DIR overrides the path.
+    profiles: ["web"]
+    build: { context: "${RUSCORD_FE_DIR:-../../ruscord-fe}" }
+    ports: ["127.0.0.1:8081:80"]
+    depends_on:
+      app: { condition: service_started }
 
 volumes:
   pg:
