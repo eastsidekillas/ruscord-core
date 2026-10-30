@@ -56,8 +56,10 @@ type Service struct {
 	tickets *Tickets
 	files   *blob.Collector
 	guilds  GuildIDs // for profile fan-out; nil means none
-	now     func() time.Time
-	dummy   string
+	// cleanups run after an account is deleted (OnAccountDeleted).
+	cleanups []AccountCleanup
+	now      func() time.Time
+	dummy    string
 }
 
 type Deps struct {

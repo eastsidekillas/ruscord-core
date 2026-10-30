@@ -72,6 +72,18 @@ func New(t *testing.T) *Env {
 		Mux: mux, Eph: &EphRecorder{}, Files: files, Blobs: blobs, srv: srv, signer: signer}
 }
 
+// Password is the password of every account User creates.
+const Password = "test-password-1"
+
+// passwordHash is computed once per test binary: Argon2id is slow on purpose.
+var passwordHash = sync.OnceValue(func() string {
+	h, err := auth.NewHasher(1).Hash(context.Background(), Password)
+	if err != nil {
+		panic(err)
+	}
+	return h
+})
+
 type User struct {
 	Env   *Env
 	ID    uuid.UUID
@@ -84,8 +96,8 @@ func (e *Env) User(name string) *User {
 	e.T.Helper()
 	id, sid := uuid.Must(uuid.NewV7()), uuid.Must(uuid.NewV7())
 	if _, err := e.PG.Exec(context.Background(),
-		`INSERT INTO users (id, email, username, display_name, password_hash) VALUES ($1, $2, $3::text, $3::text, 'x')`,
-		id, name+"@example.com", name); err != nil {
+		`INSERT INTO users (id, email, username, display_name, password_hash) VALUES ($1, $2, $3::text, $3::text, $4)`,
+		id, name+"@example.com", name, passwordHash()); err != nil {
 		e.T.Fatal(err)
 	}
 	if _, err := e.PG.Exec(context.Background(),

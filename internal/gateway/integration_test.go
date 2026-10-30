@@ -407,6 +407,7 @@ func TestProfileUpdateOnce(t *testing.T) {
 	owner, bob := s.User("owner"), s.User("bob")
 	guildWith(owner, bob)
 	guildWith(owner, bob)
+	s.flush()
 	ownerWS, _ := s.connect(owner)
 
 	_, out := bob.Upload("PUT", "/api/v1/users/@me/avatar", apitest.PNG(16, 16, color.NRGBA{9, 9, 9, 255}))
@@ -416,10 +417,21 @@ func TestProfileUpdateOnce(t *testing.T) {
 		var p struct {
 			User map[string]any `json:"user"`
 		}
-		if err := json.Unmarshal(ownerWS.expectDispatch(events.UserProfileUpdate).D, &p); err != nil {
-			t.Fatal(err)
+		// Personal events from before the connection (GUILD_CREATE of the
+		// guilds just made) may come again after READY (docs/api.md); only
+		// profile updates matter here.
+		for range 20 {
+			f := ownerWS.expectOp(opDispatch)
+			if f.T != events.UserProfileUpdate {
+				continue
+			}
+			if err := json.Unmarshal(f.D, &p); err != nil {
+				t.Fatal(err)
+			}
+			return p.User
 		}
-		return p.User
+		t.Fatal("no USER_PROFILE_UPDATE in 20 frames")
+		return nil
 	}
 	if u := profileOf(); u["id"] != bob.ID.String() || u["avatar"] != avatar || avatar == "" {
 		t.Fatalf("profile update %v, avatar %q", u, avatar)

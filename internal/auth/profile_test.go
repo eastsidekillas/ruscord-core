@@ -20,9 +20,10 @@ import (
 const me = "/api/v1/users/@me"
 
 var (
-	obj = apitest.Obj
-	str = apitest.Str
-	red = color.NRGBA{255, 0, 0, 255}
+	obj  = apitest.Obj
+	str  = apitest.Str
+	list = apitest.List
+	red  = color.NRGBA{255, 0, 0, 255}
 )
 
 type env struct {

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -115,6 +116,22 @@ func load(getenv func(string) string) (Config, error) {
 		if o = strings.TrimSpace(o); o != "" {
 			c.AllowedOrigins = append(c.AllowedOrigins, o)
 		}
+	}
+	for _, p := range strings.Split(get("RUSCORD_TRUSTED_PROXIES", ""), ",") {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		if !strings.Contains(p, "/") {
+			if a, err := netip.ParseAddr(p); err == nil {
+				p = netip.PrefixFrom(a, a.BitLen()).String()
+			}
+		}
+		prefix, err := netip.ParsePrefix(p)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("RUSCORD_TRUSTED_PROXIES: %q is not an address or CIDR", p))
+			continue
+		}
+		c.TrustedProxies = append(c.TrustedProxies, prefix.Masked())
 	}
 	c.AutoMigrate = get("RUSCORD_AUTO_MIGRATE", strconv.FormatBool(c.Env == "dev")) == "true"
 
