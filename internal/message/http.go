@@ -24,6 +24,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"GET /api/v1/channels/{channel}/messages":              h.history,
 		"PATCH /api/v1/channels/{channel}/messages/{message}":  h.edit,
 		"DELETE /api/v1/channels/{channel}/messages/{message}": h.delete,
+		"POST /api/v1/channels/{channel}/typing":               h.typing,
 	}
 	for pattern, fn := range routes {
 		mux.Handle(pattern, h.requireAuth(httpx.Handle(fn)))
@@ -112,4 +113,12 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return httpx.NoContent(w, h.svc.Delete(r.Context(), auth.UserID(r), ch, id))
+}
+
+func (h *Handler) typing(w http.ResponseWriter, r *http.Request) error {
+	channelID, err := httpx.PathUUID(r, "channel")
+	if err != nil {
+		return err
+	}
+	return httpx.NoContent(w, h.svc.Typing(r.Context(), auth.UserID(r), channelID))
 }

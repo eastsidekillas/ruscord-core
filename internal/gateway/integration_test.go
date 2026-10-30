@@ -17,6 +17,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/apitest"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/natstest"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/testdb"
+	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/social"
 )
 
@@ -31,28 +32,31 @@ type stack struct {
 }
 
 // newStack runs the relay in the background, like the API process does.
-func newStack(t *testing.T) *stack { return newStackRelay(t, true) }
+func newStack(t *testing.T) *stack { return newStackRelay(t, true, Options{}) }
 
 // newStackRelay with run=false leaves publishing to the test (flush), to
 // reproduce a relay that lags behind the database.
-func newStackRelay(t *testing.T, run bool) *stack {
+func newStackRelay(t *testing.T, run bool, opts Options) *stack {
 	t.Helper()
 	e := apitest.New(t)
 	nc := natstest.New(t)
+	eph := events.NewEphemeral(nc)
 	guilds := guild.NewService(e.PG, e.Auth, e.Limiter)
 	socials := social.NewService(e.PG, e.Auth, guilds, e.Limiter)
+	pres := presence.NewService(e.Redis, eph, guilds, PresenceTTL(opts))
+	guilds.WithPresences(pres)
 	guilds.OnChannelsDeleted(message.DeleteChannels)
 	socials.OnChannelsDeleted(message.DeleteChannels)
 	guild.NewHandler(guilds, e.RequireAuth).Register(e.Mux)
 	social.NewHandler(socials, e.RequireAuth).Register(e.Mux)
-	message.NewHandler(message.NewService(e.PG, e.Auth, guilds, socials, e.Limiter), e.RequireAuth).Register(e.Mux)
+	message.NewHandler(message.NewService(e.PG, e.Auth, guilds, socials, e.Limiter, eph), e.RequireAuth).Register(e.Mux)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	relay, err := events.NewRelay(e.PG, nc, testdb.Logger())
 	if err != nil {
 		t.Fatal(err)
 	}
-	gw, err := New(t.Context(), Deps{Auth: e.Auth, Guilds: guilds, Social: socials, NATS: nc, Log: testdb.Logger()}, Options{})
+	gw, err := New(t.Context(), Deps{Auth: e.Auth, Guilds: guilds, Social: socials, Presence: pres, NATS: nc, Log: testdb.Logger()}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +116,19 @@ func channelPerms(c *wsClient) map[string]perm.Permissions {
 	return p.ChannelPermissions
 }
 
+// guildWith creates a guild of owner through the API, lets members join by
+// invite, and returns its id and its first text channel.
+func guildWith(owner *apitest.User, members ...*apitest.User) (gid, general string) {
+	g := apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/guilds", map[string]any{"name": "Сервер"}))
+	gid = apitest.Str(g["id"])
+	general = apitest.Str(apitest.Obj(apitest.List(g["channels"])[0])["id"])
+	code := apitest.Str(apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/channels/"+general+"/invites", map[string]any{}))["code"])
+	for _, m := range members {
+		m.Expect(http.StatusOK, "POST", "/api/v1/invites/"+code, nil)
+	}
+	return gid, general
+}
+
 func idOf(f frame) string {
 	var p struct {
 		ID string `json:"id"`
@@ -129,11 +146,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 	}
 
 	// Bob joins by invite: the guild arrives without anything hidden.
-	g := apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/guilds", map[string]any{"name": "Сервер"}))
-	gid := apitest.Str(g["id"])
-	general := apitest.Str(apitest.Obj(apitest.List(g["channels"])[0])["id"])
-	code := apitest.Str(apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/channels/"+general+"/invites", map[string]any{}))["code"])
-	bob.Expect(http.StatusOK, "POST", "/api/v1/invites/"+code, nil)
+	gid, general := guildWith(owner, bob)
 	if f := bobWS.expectDispatch(events.GuildCreate); idOf(f) != gid {
 		t.Fatalf("GUILD_CREATE for %s, want %s", idOf(f), gid)
 	}
@@ -275,13 +288,9 @@ func permString(p perm.Permissions) string { return strconv.FormatUint(uint64(p)
 // is a mod would reveal a channel he could see neither then nor now; the
 // snapshot cursor (outbox id) makes the gateway skip what READY contains.
 func TestGatewayLaggingRelayDoesNotLeak(t *testing.T) {
-	s := newStackRelay(t, false)
+	s := newStackRelay(t, false, Options{})
 	owner, bob := s.User("owner"), s.User("bob")
-	g := apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/guilds", map[string]any{"name": "Сервер"}))
-	gid := apitest.Str(g["id"])
-	general := apitest.Str(apitest.Obj(apitest.List(g["channels"])[0])["id"])
-	code := apitest.Str(apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/channels/"+general+"/invites", map[string]any{}))["code"])
-	bob.Expect(http.StatusOK, "POST", "/api/v1/invites/"+code, nil)
+	gid, general := guildWith(owner, bob)
 	secret := apitest.Str(apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/guilds/"+gid+"/channels",
 		map[string]any{"name": "secret", "type": 0}))["id"])
 	owner.Expect(http.StatusOK, "PUT", "/api/v1/channels/"+secret+"/permissions/"+gid,
@@ -314,5 +323,76 @@ func TestGatewayLaggingRelayDoesNotLeak(t *testing.T) {
 	s.flush()
 	if f := bobWS.expectDispatch(events.ChannelCreate); idOf(f) != secret {
 		t.Fatalf("change after READY: %s", f.D)
+	}
+}
+
+// Typing and presence across the real stack: REST → NATS → gateway →
+// WebSocket, with permission filtering and the guild member list.
+func TestGatewayTypingAndPresence(t *testing.T) {
+	s := newStack(t)
+	owner, bob := s.User("owner"), s.User("bob")
+	gid, general := guildWith(owner, bob)
+	// Otherwise GUILD_CREATE may still be on its way and arrive again after
+	// READY (documented: personal *_CREATE events may repeat).
+	s.flush()
+	ownerWS, _ := s.connect(owner)
+	bobWS, _ := s.connect(bob)
+
+	// Bob comes online: the owner sees it through their shared small guild.
+	if st := statusOf(t, ownerWS, bob.ID); st != presence.Online {
+		t.Fatalf("bob online: %s", st)
+	}
+	// Bob reads the owner's status from the member list, not from events
+	// published before he was listening.
+	for _, m := range apitest.List(bob.Expect(http.StatusOK, "GET", "/api/v1/guilds/"+gid+"/members", nil)) {
+		if apitest.Str(apitest.Obj(m)["user_id"]) == owner.ID.String() && apitest.Obj(m)["status"] != "online" {
+			t.Fatalf("owner in the member list: %v", m)
+		}
+	}
+
+	typingIn := func(f frame) string {
+		var p struct {
+			ChannelID string `json:"channel_id"`
+			UserID    string `json:"user_id"`
+		}
+		_ = json.Unmarshal(f.D, &p)
+		return p.ChannelID + " by " + p.UserID
+	}
+	bob.Expect(http.StatusNoContent, "POST", "/api/v1/channels/"+general+"/typing", nil)
+	if got := typingIn(ownerWS.expectDispatch(events.TypingStart)); got != general+" by "+bob.ID.String() {
+		t.Fatalf("typing: %s", got)
+	}
+
+	// Typing in a channel hidden from Bob never reaches him: the next thing
+	// he gets after the hiding is the typing in general.
+	secret := apitest.Str(apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/guilds/"+gid+"/channels",
+		map[string]any{"name": "secret", "type": 0}))["id"])
+	owner.Expect(http.StatusOK, "PUT", "/api/v1/channels/"+secret+"/permissions/"+gid,
+		map[string]any{"type": 1, "deny": permString(perm.ViewChannel)})
+	for _, typ := range []string{events.ChannelCreate, typePermissionsUpdate, events.ChannelDelete, typePermissionsUpdate} {
+		bobWS.expectDispatch(typ)
+	}
+	// The owner still sees the channel: created, then updated; their
+	// permissions change only with the new channel.
+	for _, typ := range []string{events.ChannelCreate, typePermissionsUpdate, events.ChannelUpdate} {
+		ownerWS.expectDispatch(typ)
+	}
+	owner.Expect(http.StatusNoContent, "POST", "/api/v1/channels/"+secret+"/typing", nil)
+	owner.Expect(http.StatusNoContent, "POST", "/api/v1/channels/"+general+"/typing", nil)
+	if got := typingIn(bobWS.expectDispatch(events.TypingStart)); got != general+" by "+owner.ID.String() {
+		t.Fatalf("bob got typing from %s, the hidden channel leaked", got)
+	}
+
+	// Bob chooses "do not disturb", then invisible: his session gets his own
+	// USER_UPDATE, the owner sees dnd, then offline.
+	bob.Expect(http.StatusOK, "PATCH", "/api/v1/users/@me", map[string]any{"status": "dnd"})
+	bobWS.expectDispatch(events.UserUpdate)
+	if st := statusOf(t, ownerWS, bob.ID); st != presence.DND {
+		t.Fatalf("bob dnd: %s", st)
+	}
+	bob.Expect(http.StatusOK, "PATCH", "/api/v1/users/@me", map[string]any{"status": "invisible"})
+	bobWS.expectDispatch(events.UserUpdate)
+	if st := statusOf(t, ownerWS, bob.ID); st != presence.Offline {
+		t.Fatalf("bob invisible: %s", st)
 	}
 }

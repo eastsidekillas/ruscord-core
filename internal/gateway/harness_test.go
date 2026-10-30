@@ -10,10 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/events"
@@ -21,6 +23,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/natstest"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/testdb"
+	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/social"
 )
 
@@ -31,6 +34,7 @@ type fakeAuth struct {
 	mu       sync.Mutex
 	tickets  map[string]auth.Principal
 	inactive map[uuid.UUID]bool
+	status   map[uuid.UUID]string // chosen status; online when absent
 }
 
 func (a *fakeAuth) ConsumeTicket(_ context.Context, t string) (auth.Principal, error) {
@@ -51,7 +55,13 @@ func (a *fakeAuth) SessionActive(_ context.Context, sid uuid.UUID) (bool, error)
 }
 
 func (a *fakeAuth) Me(_ context.Context, p auth.Principal) (auth.User, error) {
-	return auth.User{ID: p.UserID, Username: "user"}, nil
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	st := a.status[p.UserID]
+	if st == "" {
+		st = "online"
+	}
+	return auth.User{ID: p.UserID, Username: "user", Status: st}, nil
 }
 
 type fakeGuilds struct {
@@ -76,12 +86,30 @@ func (g *fakeGuilds) Snapshot(_ context.Context, user, id uuid.UUID) (guild.Snap
 	return guild.Snapshot{}, httpx.ErrNotFound
 }
 
-type fakeSocial struct{}
-
-func (fakeSocial) ListDMs(context.Context, uuid.UUID) ([]social.DM, error) { return nil, nil }
-func (fakeSocial) List(context.Context, uuid.UUID) ([]social.Relationship, error) {
-	return nil, nil
+type fakeSocial struct {
+	mu   sync.Mutex
+	rels map[uuid.UUID][]social.Relationship
 }
+
+func (*fakeSocial) ListDMs(context.Context, uuid.UUID) ([]social.DM, error) { return nil, nil }
+func (f *fakeSocial) List(_ context.Context, user uuid.UUID) ([]social.Relationship, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rels[user], nil
+}
+
+// befriend makes a and b friends for READY (events are published separately).
+func (f *fakeSocial) befriend(a, b uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rels[a] = append(f.rels[a], social.Relationship{ID: b, Type: social.RelFriend})
+	f.rels[b] = append(f.rels[b], social.Relationship{ID: a, Type: social.RelFriend})
+}
+
+// noGuilds: presence in guilds is covered by the integration tests.
+type noGuilds struct{}
+
+func (noGuilds) SmallGuilds(context.Context, uuid.UUID, int) ([]uuid.UUID, error) { return nil, nil }
 
 type harness struct {
 	t      *testing.T
@@ -89,6 +117,9 @@ type harness struct {
 	http   *httptest.Server
 	auth   *fakeAuth
 	guilds *fakeGuilds
+	social *fakeSocial
+	pres   *presence.Service
+	mr     *miniredis.Miniredis
 	js     jetstream.JetStream
 	cancel context.CancelFunc
 	clock  *testClock
@@ -110,12 +141,16 @@ func newHarness(t *testing.T, opts Options) *harness {
 // newHarnessWith lets a test supply NATS and an http.Server configuration.
 func newHarnessWith(t *testing.T, nc *nats.Conn, opts Options, configure func(*http.Server)) *harness {
 	t.Helper()
-	h := &harness{t: t, auth: &fakeAuth{tickets: map[string]auth.Principal{}, inactive: map[uuid.UUID]bool{}},
-		guilds: &fakeGuilds{snaps: map[uuid.UUID][]guild.Snapshot{}}, clock: &testClock{t: time.Unix(1_700_000_000, 0)}}
+	h := &harness{t: t, auth: &fakeAuth{tickets: map[string]auth.Principal{}, inactive: map[uuid.UUID]bool{}, status: map[uuid.UUID]string{}},
+		guilds: &fakeGuilds{snaps: map[uuid.UUID][]guild.Snapshot{}}, social: &fakeSocial{rels: map[uuid.UUID][]social.Relationship{}},
+		clock: &testClock{t: time.Unix(1_700_000_000, 0)}}
+	h.mr = miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: h.mr.Addr()})
+	h.pres = presence.NewService(rdb, events.NewEphemeral(nc), noGuilds{}, PresenceTTL(opts))
 	if opts.Now == nil {
 		opts.Now = h.clock.Now
 	}
-	srv, err := New(t.Context(), Deps{Auth: h.auth, Guilds: h.guilds, Social: fakeSocial{}, NATS: nc, Log: testdb.Logger()}, opts)
+	srv, err := New(t.Context(), Deps{Auth: h.auth, Guilds: h.guilds, Social: h.social, Presence: h.pres, NATS: nc, Log: testdb.Logger()}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}

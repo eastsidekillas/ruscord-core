@@ -451,3 +451,44 @@ func TestRevokeNotifiesGateway(t *testing.T) {
 		t.Fatal("expired session reported active")
 	}
 }
+
+func TestUpdateStatus(t *testing.T) {
+	e := newEnv(t)
+	c := e.client(t)
+	register(t, c, "timofey")
+	if _, me := c.do("GET", "/api/v1/users/@me", nil); me["status"] != "online" {
+		t.Fatalf("new user status = %v, want online", me["status"])
+	}
+	for _, body := range []map[string]any{{}, {"status": "offline"}, {"status": "away"}, {"status": "DND"}, {"status": ""}} {
+		if resp, got := c.do("PATCH", "/api/v1/users/@me", body); resp.StatusCode != 422 {
+			t.Fatalf("PATCH %v: %d %v, want 422", body, resp.StatusCode, got)
+		}
+	}
+	if resp, _ := c.do("PATCH", "/api/v1/users/@me", map[string]any{"status": "dnd", "email": "x@y.z"}); resp.StatusCode != 400 {
+		t.Fatal("unknown fields must be rejected, email cannot change here")
+	}
+	resp, u := c.do("PATCH", "/api/v1/users/@me", map[string]any{"status": "dnd"})
+	if resp.StatusCode != 200 || u["status"] != "dnd" || u["username"] != "timofey" {
+		t.Fatalf("PATCH dnd: %d %v", resp.StatusCode, u)
+	}
+	if _, me := c.do("GET", "/api/v1/users/@me", nil); me["status"] != "dnd" {
+		t.Fatalf("status after PATCH = %v", me["status"])
+	}
+	var topic, status string
+	if err := e.pg.QueryRow(t.Context(),
+		`SELECT topic, payload->>'status' FROM outbox WHERE type = 'USER_UPDATE' ORDER BY id DESC LIMIT 1`).Scan(&topic, &status); err != nil {
+		t.Fatal(err)
+	}
+	if topic != "user."+u["id"].(string) || status != "dnd" {
+		t.Fatalf("USER_UPDATE to %s with %s", topic, status)
+	}
+	var n int
+	_ = e.pg.QueryRow(t.Context(), `SELECT count(*) FROM outbox WHERE type = 'USER_UPDATE'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("%d USER_UPDATE events, rejected requests must not write any", n)
+	}
+	anon := e.client(t)
+	if resp, _ := anon.do("PATCH", "/api/v1/users/@me", map[string]any{"status": "dnd"}); resp.StatusCode != 401 {
+		t.Fatal("PATCH without a session must be 401")
+	}
+}

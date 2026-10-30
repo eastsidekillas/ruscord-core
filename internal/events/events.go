@@ -40,6 +40,10 @@ const (
 	MessageUpdate = "MESSAGE_UPDATE"
 	MessageDelete = "MESSAGE_DELETE"
 
+	// UserUpdate goes to the user's own topic when their account changes
+	// (for now, the chosen status). Carries the full private user object.
+	UserUpdate = "USER_UPDATE"
+
 	// SessionRevoke goes to the user topic when a sign-in session is revoked
 	// (logout, refresh-token reuse). It is internal: the gateway closes the
 	// connections of that session and never forwards it to clients.

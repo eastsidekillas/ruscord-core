@@ -14,6 +14,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
+	"github.com/eastsidekillas/ruscord-core/internal/presence"
 )
 
 // event is one message of the EVENTS stream.
@@ -38,6 +39,15 @@ type routed struct {
 	resubscribe bool
 	// revoked: the sign-in session behind the connection was revoked.
 	revoked bool
+	// ephChanged: the ephemeral subjects changed (a friend added or removed;
+	// resubscribe implies it too).
+	ephChanged bool
+	// choiceChanged: the user chose another status; presence must be
+	// recomputed.
+	choiceChanged bool
+	// newFriends: people who became friends; the client needs their current
+	// status, since PRESENCE_UPDATE only reports changes.
+	newFriends []uuid.UUID
 }
 
 // GuildLoader loads one guild as userID sees it; guild.Service implements it.
@@ -56,11 +66,21 @@ type router struct {
 	guilds      map[uuid.UUID]*guildState
 	dms         map[uuid.UUID]bool
 	loader      GuildLoader
+
+	// friends get the user's presence and send theirs (eph.presence.<id>).
+	friends map[uuid.UUID]bool
+	// choice is the status the user chose (USER_UPDATE changes it).
+	choice presence.Status
+	// seen is the last status delivered per user. One change reaches the
+	// session once per shared guild and once more if a friend; only the
+	// first copy goes out.
+	seen map[uuid.UUID]presence.Status
 }
 
 func newRouter(user, authSession uuid.UUID, loader GuildLoader, snaps []guild.Snapshot, dmIDs []uuid.UUID) *router {
 	r := &router{user: user, authSession: authSession, loader: loader,
-		guilds: make(map[uuid.UUID]*guildState, len(snaps)), dms: make(map[uuid.UUID]bool, len(dmIDs))}
+		guilds: make(map[uuid.UUID]*guildState, len(snaps)), dms: make(map[uuid.UUID]bool, len(dmIDs)),
+		friends: map[uuid.UUID]bool{}, choice: presence.Online, seen: map[uuid.UUID]presence.Status{}}
 	for _, s := range snaps {
 		r.guilds[s.Guild.ID] = newGuildState(s)
 	}
@@ -81,6 +101,22 @@ func (r *router) subjects() []string {
 		out = append(out, events.ChannelTopic(id))
 	}
 	slices.Sort(out[1:])
+	return out
+}
+
+// ephSubjects are the ephemeral subjects the session listens to.
+func (r *router) ephSubjects() []string {
+	out := make([]string, 0, len(r.guilds)+len(r.dms)+len(r.friends))
+	for id := range r.guilds {
+		out = append(out, events.EphGuildTopic(id))
+	}
+	for id := range r.dms {
+		out = append(out, events.EphChannelTopic(id))
+	}
+	for id := range r.friends {
+		out = append(out, events.EphPresenceTopic(id))
+	}
+	slices.Sort(out)
 	return out
 }
 
@@ -129,9 +165,44 @@ type idPayload struct {
 
 func (r *router) userEvent(ctx context.Context, ev event) (routed, error) {
 	switch ev.Type {
-	case events.RelationshipAdd, events.RelationshipRemove,
-		events.RecipientAdd, events.RecipientRemove, events.ChannelUpdate:
+	case events.RecipientAdd, events.RecipientRemove, events.ChannelUpdate:
 		return forward(ev), nil
+
+	case events.RelationshipAdd, events.RelationshipRemove:
+		res := forward(ev)
+		var p struct {
+			ID   uuid.UUID `json:"id"`
+			Type int       `json:"type"`
+		}
+		if json.Unmarshal(ev.Data, &p) != nil || p.Type != relFriend {
+			return res, nil
+		}
+		was := r.friends[p.ID]
+		if ev.Type == events.RelationshipAdd {
+			r.friends[p.ID] = true
+			if !was {
+				res.newFriends = []uuid.UUID{p.ID}
+			}
+		} else {
+			delete(r.friends, p.ID)
+			delete(r.seen, p.ID) // a stale status must not suppress the next one
+		}
+		res.ephChanged = was != r.friends[p.ID]
+		return res, nil
+
+	case events.UserUpdate:
+		var p struct {
+			Status presence.Status `json:"status"`
+		}
+		if json.Unmarshal(ev.Data, &p) != nil {
+			return routed{}, nil
+		}
+		res := forward(ev)
+		if presence.ValidChoice(p.Status) && p.Status != r.choice {
+			r.choice = p.Status
+			res.choiceChanged = true
+		}
+		return res, nil
 
 	case events.GuildCreate:
 		var p idPayload
@@ -152,6 +223,7 @@ func (r *router) userEvent(ctx context.Context, ev event) (routed, error) {
 		_, known := r.guilds[p.ID]
 		g := newGuildState(snap)
 		r.guilds[p.ID] = g
+		r.forgetSeen()
 		return routed{out: []dispatch{{T: events.GuildCreate, D: mustJSON(g.full())}}, resubscribe: !known}, nil
 
 	case events.GuildDelete:
@@ -160,6 +232,7 @@ func (r *router) userEvent(ctx context.Context, ev event) (routed, error) {
 			return routed{}, nil
 		}
 		delete(r.guilds, p.ID)
+		r.forgetSeen()
 		return routed{out: []dispatch{{T: ev.Type, D: ev.Data}}, resubscribe: true}, nil
 
 	case events.ChannelCreate, events.ChannelDelete: // direct messages
@@ -215,6 +288,7 @@ func (r *router) applyGuildEvent(guildID uuid.UUID, g *guildState, ev event) (ro
 
 	case events.GuildDelete:
 		delete(r.guilds, guildID)
+		r.forgetSeen()
 		return routed{out: []dispatch{{T: ev.Type, D: ev.Data}}, resubscribe: true}, nil
 
 	case events.ChannelCreate, events.ChannelUpdate:
@@ -363,4 +437,86 @@ func mustJSON(v any) json.RawMessage {
 		panic(fmt.Sprintf("gateway: marshal %T: %v", v, err))
 	}
 	return b
+}
+
+// relFriend is social.RelFriend as it travels in RELATIONSHIP_* payloads.
+const relFriend = 1
+
+// routeEphemeral filters an ephemeral event (typing, presence). It reads
+// the session state and only changes the record of delivered statuses.
+func (r *router) routeEphemeral(ev event) routed {
+	rest, ok := strings.CutPrefix(ev.Subject, "eph.")
+	if !ok {
+		return routed{}
+	}
+	kind, id, ok := strings.Cut(rest, ".")
+	if !ok {
+		return routed{}
+	}
+	topicID, err := uuid.Parse(id)
+	if err != nil {
+		return routed{}
+	}
+	switch ev.Type {
+	case events.TypingStart:
+		var p struct {
+			ChannelID uuid.UUID `json:"channel_id"`
+			UserID    uuid.UUID `json:"user_id"`
+		}
+		if json.Unmarshal(ev.Data, &p) != nil || p.UserID == r.user {
+			return routed{}
+		}
+		switch kind {
+		case "guild":
+			g := r.guilds[topicID]
+			if g == nil {
+				return routed{}
+			}
+			if _, visible := g.view.Channels[p.ChannelID]; !visible {
+				return routed{} // typing in a hidden channel reveals it exists
+			}
+		case "channel":
+			if !r.dms[topicID] || p.ChannelID != topicID {
+				return routed{}
+			}
+		default:
+			return routed{}
+		}
+		return forward(ev)
+
+	case events.PresenceUpdate:
+		var p presence.Update
+		if json.Unmarshal(ev.Data, &p) != nil || p.UserID == r.user {
+			return routed{}
+		}
+		switch kind {
+		case "guild":
+			if r.guilds[topicID] == nil {
+				return routed{}
+			}
+		case "presence":
+			if !r.friends[topicID] || p.UserID != topicID {
+				return routed{}
+			}
+		default:
+			return routed{}
+		}
+		return r.presence(p)
+	}
+	return routed{}
+}
+
+// forgetSeen drops the record of delivered statuses when the set of guilds
+// changes: a status missed while not sharing a guild would otherwise
+// suppress the next real one. A repeated status is harmless; a suppressed
+// one leaves a person shown in the wrong state.
+func (r *router) forgetSeen() { clear(r.seen) }
+
+// presence delivers a status unless this one was the last delivered.
+func (r *router) presence(p presence.Update) routed {
+	if r.seen[p.UserID] == p.Status {
+		return routed{}
+	}
+	r.seen[p.UserID] = p.Status
+	return routed{out: []dispatch{{T: events.PresenceUpdate, D: mustJSON(p)}}}
 }

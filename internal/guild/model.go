@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
+	"github.com/eastsidekillas/ruscord-core/internal/presence"
 )
 
 type ChannelType int16
@@ -68,6 +69,10 @@ type Member struct {
 	RoleIDs  []uuid.UUID `json:"roles"`
 	JoinedAt time.Time   `json:"joined_at"`
 	User     any         `json:"user,omitempty"`
+	// Status is what others see of the member (online, idle, dnd, offline).
+	// Only GET /guilds/{id}/members fills it, and only in guilds of up to
+	// presence.MaxGuildMembers members.
+	Status presence.Status `json:"status,omitempty"`
 }
 
 // Full is a guild as one member sees it: channels they cannot view are left

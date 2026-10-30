@@ -19,6 +19,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
+	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/social"
 )
 
@@ -41,12 +42,22 @@ type Social interface {
 	List(ctx context.Context, me uuid.UUID) ([]social.Relationship, error)
 }
 
+// Presence is what the gateway needs from internal/presence.
+type Presence interface {
+	Touch(ctx context.Context, user uuid.UUID, sid string, state presence.Status) error
+	Drop(ctx context.Context, user uuid.UUID, sid string) error
+	Refresh(ctx context.Context, user uuid.UUID, choice presence.Status) (presence.Status, error)
+	Statuses(ctx context.Context, users []uuid.UUID) (map[uuid.UUID]presence.Status, error)
+	TTL() time.Duration
+}
+
 type Deps struct {
-	Auth   Auth
-	Guilds Guilds
-	Social Social
-	NATS   *nats.Conn
-	Log    *slog.Logger
+	Auth     Auth
+	Guilds   Guilds
+	Social   Social
+	Presence Presence
+	NATS     *nats.Conn
+	Log      *slog.Logger
 }
 
 type Options struct {
@@ -78,6 +89,14 @@ func (o *Options) defaults() {
 	}
 }
 
+// PresenceTTL is the presence TTL to use with these options: a dropped
+// connection stays online for its resume window, and a live one survives a
+// late heartbeat.
+func PresenceTTL(o Options) time.Duration {
+	o.defaults()
+	return o.ResumeWindow + 2*o.Heartbeat
+}
+
 // Replay buffer caps per session (see replayBuffer). The outbound queue of
 // a connection holds a full replay plus a margin, so a RESUME always fits.
 const (
@@ -93,6 +112,7 @@ type Server struct {
 	log    *slog.Logger
 	js     jetstream.JetStream
 	stream jetstream.Stream
+	hub    *hub
 
 	base       context.Context // parent of every session pump
 	stopPumps  context.CancelFunc
@@ -115,9 +135,14 @@ func New(ctx context.Context, deps Deps, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gateway: events stream: %w", err)
 	}
+	// A dropped connection must stay "online" while it can resume, and a
+	// live one must not expire between heartbeats.
+	if min := opts.ResumeWindow + opts.Heartbeat; deps.Presence.TTL() < min {
+		return nil, fmt.Errorf("gateway: presence TTL %s is shorter than resume window + heartbeat (%s)", deps.Presence.TTL(), min)
+	}
 	base, stop := context.WithCancel(context.Background())
 	return &Server{deps: deps, opts: opts, log: deps.Log, js: js, stream: st, base: base, stopPumps: stop,
-		sessions: map[string]*session{}, perUser: map[uuid.UUID]int{}}, nil
+		hub: newHub(deps.NATS, deps.Log), sessions: map[string]*session{}, perUser: map[uuid.UUID]int{}}, nil
 }
 
 func (s *Server) now() time.Time { return s.opts.Now() }
@@ -259,6 +284,8 @@ type readyData struct {
 	Guilds        []guild.Full          `json:"guilds"`
 	DMs           []social.DM           `json:"dms"`
 	Relationships []social.Relationship `json:"relationships"`
+	// Presences are the friends who are not offline; everyone else is.
+	Presences []presence.Update `json:"presences"`
 }
 
 var (
@@ -318,6 +345,27 @@ func (s *Server) start(ctx context.Context, p auth.Principal, c *conn) (*session
 		dmIDs[i] = d.ID
 	}
 	r := newRouter(p.UserID, p.SessionID, s.deps.Guilds, snaps, dmIDs)
+	var friendIDs []uuid.UUID
+	for _, rel := range rels {
+		if rel.Type == social.RelFriend {
+			r.friends[rel.ID] = true
+			friendIDs = append(friendIDs, rel.ID)
+		}
+	}
+	if choice := presence.Status(user.Status); presence.ValidChoice(choice) {
+		r.choice = choice
+	}
+	statuses, err := s.deps.Presence.Statuses(ctx, friendIDs)
+	if err != nil {
+		return nil, err
+	}
+	presences := []presence.Update{}
+	for _, id := range friendIDs {
+		if st := statuses[id]; st != presence.Offline {
+			presences = append(presences, presence.Update{UserID: id, Status: st})
+		}
+		r.seen[id] = statuses[id]
+	}
 	id, err := newSessionID()
 	if err != nil {
 		return nil, err
@@ -328,10 +376,11 @@ func (s *Server) start(ctx context.Context, p auth.Principal, c *conn) (*session
 	}
 	ready := encode(outFrame{Op: opDispatch, S: 1, T: typeReady, D: mustJSON(readyData{
 		V: 1, SessionID: id, User: user, Guilds: fulls, DMs: nonNil(dms), Relationships: nonNil(rels),
+		Presences: presences,
 	})})
 
 	pctx, cancel := context.WithCancel(s.base)
-	ss := &session{id: id, principal: p, srv: s, cancel: cancel, conn: c,
+	ss := &session{id: id, principal: p, srv: s, cancel: cancel, conn: c, r: r, state: presence.Online,
 		buf: newReplayBuffer(1, replayMaxFrames, replayMaxBytes)} // READY is s=1 and is not replayed
 	s.mu.Lock()
 	if s.closing {
@@ -342,7 +391,10 @@ func (s *Server) start(ctx context.Context, p auth.Principal, c *conn) (*session
 	s.sessions[id] = ss
 	s.mu.Unlock()
 	c.send(ready)
-	go ss.pump(pctx, r, from)
+	ss.syncEph()
+	ss.touch()
+	ss.refreshPresence()
+	go ss.pump(pctx, from)
 	return ss, nil
 }
 
