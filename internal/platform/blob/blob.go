@@ -34,6 +34,8 @@ type Store interface {
 	Delete(ctx context.Context, key string) error
 	// Ping checks that the store is reachable and the bucket exists.
 	Ping(ctx context.Context) error
+	// List calls fn with every key, in no particular order.
+	List(ctx context.Context, fn func(key string) error) error
 }
 
 // S3Config addresses a bucket on an S3-compatible server.
@@ -141,6 +143,22 @@ func isNotFound(err error) bool {
 	return errors.As(err, &ae) && (ae.ErrorCode() == "NoSuchKey" || ae.ErrorCode() == "NotFound")
 }
 
+func (s *S3) List(ctx context.Context, fn func(key string) error) error {
+	p := s3.NewListObjectsV2Paginator(s.c, &s3.ListObjectsV2Input{Bucket: aws.String(s.bucket)})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("blob: list: %w", err)
+		}
+		for _, o := range page.Contents {
+			if err := fn(aws.ToString(o.Key)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Memory is a Store in memory, for tests.
 type Memory struct {
 	mu   sync.Mutex
@@ -186,6 +204,15 @@ func (m *Memory) Delete(_ context.Context, key string) error {
 }
 
 func (m *Memory) Ping(context.Context) error { return nil }
+
+func (m *Memory) List(_ context.Context, fn func(key string) error) error {
+	for _, k := range m.Keys() {
+		if err := fn(k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // Keys lists stored keys, for tests.
 func (m *Memory) Keys() []string {

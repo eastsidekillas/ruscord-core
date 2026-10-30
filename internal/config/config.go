@@ -53,6 +53,9 @@ type Config struct {
 	JWTSeed        []byte
 	AllowedOrigins []string
 	AutoMigrate    bool
+	// MetricsAddr serves GET /metrics on its own listener, never through the
+	// public proxy. "off" disables it.
+	MetricsAddr string
 }
 
 func (c Config) IsDev() bool { return c.Env == "dev" }
@@ -94,6 +97,7 @@ func load(getenv func(string) string) (Config, error) {
 		S3AccessKey:      get("RUSCORD_S3_ACCESS_KEY", ""),
 		S3SecretKey:      get("RUSCORD_S3_SECRET_KEY", ""),
 		LiveKitURL:       get("RUSCORD_LIVEKIT_URL", "ws://127.0.0.1:7880"),
+		MetricsAddr:      get("RUSCORD_METRICS_ADDR", "127.0.0.1:9090"),
 		LiveKitAPIKey:    get("RUSCORD_LIVEKIT_API_KEY", ""),
 		LiveKitAPISecret: get("RUSCORD_LIVEKIT_API_SECRET", ""),
 	}
