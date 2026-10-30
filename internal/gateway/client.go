@@ -151,8 +151,12 @@ func (cl *client) identify(ctx context.Context, d identifyData) (websocket.Statu
 	if code != 0 {
 		return code, "authentication failed"
 	}
-	if !s.reserve(p.UserID) && !(s.evictDetached(p.UserID) && s.reserve(p.UserID)) {
-		return closeTooManySessions, "too many sessions"
+	if !s.reserve(p.UserID) {
+		// Abandoned sessions must not lock the user out: evict the oldest
+		// detached one and try again.
+		if !s.evictDetached(p.UserID) || !s.reserve(p.UserID) {
+			return closeTooManySessions, "too many sessions"
+		}
 	}
 	ss, err := s.start(ctx, p, cl.c)
 	if err != nil {
