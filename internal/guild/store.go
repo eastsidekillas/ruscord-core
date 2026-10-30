@@ -21,28 +21,65 @@ type querier interface {
 }
 
 func getGuild(ctx context.Context, q querier, id uuid.UUID) (Guild, error) {
-	var g Guild
-	err := q.QueryRow(ctx, `SELECT id, name, owner_id, created_at FROM guilds WHERE id = $1`, id).
-		Scan(&g.ID, &g.Name, &g.OwnerID, &g.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	gs, err := guildsIn(ctx, q, []uuid.UUID{id})
+	if err != nil {
+		return Guild{}, err
+	}
+	g, ok := gs[id]
+	if !ok {
 		return Guild{}, errNotFound
 	}
-	return g, err
+	return g, nil
 }
 
-func listRoles(ctx context.Context, q querier, guildID uuid.UUID) ([]Role, error) {
-	rows, err := q.Query(ctx,
-		`SELECT id, guild_id, name, position, permissions, color FROM roles WHERE guild_id = $1 ORDER BY position, id`, guildID)
+func guildsIn(ctx context.Context, q querier, ids []uuid.UUID) (map[uuid.UUID]Guild, error) {
+	rows, err := q.Query(ctx, `SELECT id, name, owner_id, created_at FROM guilds WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (Role, error) {
+	gs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Guild, error) {
+		var g Guild
+		err := r.Scan(&g.ID, &g.Name, &g.OwnerID, &g.CreatedAt)
+		return g, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]Guild, len(gs))
+	for _, g := range gs {
+		out[g.ID] = g
+	}
+	return out, nil
+}
+
+func listRoles(ctx context.Context, q querier, guildID uuid.UUID) ([]Role, error) {
+	rs, err := rolesIn(ctx, q, []uuid.UUID{guildID})
+	return rs[guildID], err
+}
+
+// rolesIn returns the roles of each guild, ordered by position.
+func rolesIn(ctx context.Context, q querier, guildIDs []uuid.UUID) (map[uuid.UUID][]Role, error) {
+	rows, err := q.Query(ctx,
+		`SELECT id, guild_id, name, position, permissions, color FROM roles
+		 WHERE guild_id = ANY($1) ORDER BY guild_id, position, id`, guildIDs)
+	if err != nil {
+		return nil, err
+	}
+	roles, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Role, error) {
 		var role Role
 		var p int64
 		err := r.Scan(&role.ID, &role.GuildID, &role.Name, &role.Position, &p, &role.Color)
 		role.Permissions = perm.Permissions(p) //nolint:gosec // stored from a uint64 with the top bit unused
 		return role, err
 	})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID][]Role, len(guildIDs))
+	for _, r := range roles {
+		out[r.GuildID] = append(out[r.GuildID], r)
+	}
+	return out, nil
 }
 
 // memberSelect reads members with their role ids; callers add WHERE, ORDER and LIMIT.
@@ -81,9 +118,16 @@ func listMembers(ctx context.Context, q querier, guildID, after uuid.UUID, limit
 }
 
 func listChannels(ctx context.Context, q querier, guildID uuid.UUID) ([]Channel, error) {
+	chs, err := channelsIn(ctx, q, []uuid.UUID{guildID})
+	return chs[guildID], err
+}
+
+// channelsIn returns the channels of each guild with their overwrites,
+// ordered by position.
+func channelsIn(ctx context.Context, q querier, guildIDs []uuid.UUID) (map[uuid.UUID][]Channel, error) {
 	rows, err := q.Query(ctx,
 		`SELECT id, guild_id, type, COALESCE(name, ''), COALESCE(topic, ''), parent_id, position, user_limit, bitrate
-		 FROM channels WHERE guild_id = $1 ORDER BY position, id`, guildID)
+		 FROM channels WHERE guild_id = ANY($1) ORDER BY guild_id, position, id`, guildIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -91,14 +135,16 @@ func listChannels(ctx context.Context, q querier, guildID uuid.UUID) ([]Channel,
 	if err != nil {
 		return nil, err
 	}
-	ows, err := overwritesFor(ctx, q, `c.guild_id = $1`, guildID)
+	ows, err := overwritesFor(ctx, q, `c.guild_id = ANY($1)`, guildIDs)
 	if err != nil {
 		return nil, err
 	}
-	for i := range chs {
-		chs[i].Overwrites = overwritesOf(ows, chs[i].ID)
+	out := make(map[uuid.UUID][]Channel, len(guildIDs))
+	for _, ch := range chs {
+		ch.Overwrites = overwritesOf(ows, ch.ID)
+		out[ch.GuildID] = append(out[ch.GuildID], ch)
 	}
-	return chs, nil
+	return out, nil
 }
 
 func getChannel(ctx context.Context, q querier, id uuid.UUID) (Channel, error) {
@@ -200,22 +246,30 @@ func loadGuildAccess(ctx context.Context, q querier, guildID, userID uuid.UUID, 
 	if err != nil {
 		return access{}, err
 	}
+	return access{guild: g, roles: roles, pg: permGuild(g, roles), member: perm.Member{UserID: userID, RoleIDs: roleIDs}}, nil
+}
+
+// permGuild is the input of internal/perm for a guild and its roles.
+func permGuild(g Guild, roles []Role) perm.Guild {
 	pg := perm.Guild{ID: g.ID, OwnerID: g.OwnerID, Roles: make(map[uuid.UUID]perm.Role, len(roles))}
 	for _, r := range roles {
 		pg.Roles[r.ID] = perm.Role{ID: r.ID, Position: r.Position, Permissions: r.Permissions}
 	}
-	return access{guild: g, roles: roles, pg: pg, member: perm.Member{UserID: userID, RoleIDs: roleIDs}}, nil
+	return pg
 }
 
-func (a access) base() perm.Permissions { return perm.Base(a.pg, a.member) }
-
-func (a access) in(ch Channel) perm.Permissions {
+// channelPerm is what member may do in ch.
+func channelPerm(pg perm.Guild, member perm.Member, ch Channel) perm.Permissions {
 	ows := make([]perm.Overwrite, len(ch.Overwrites))
 	for i, o := range ch.Overwrites {
 		ows[i] = o.perm()
 	}
-	return perm.InChannel(a.pg, a.member, ows)
+	return perm.InChannel(pg, member, ows)
 }
+
+func (a access) base() perm.Permissions { return perm.Base(a.pg, a.member) }
+
+func (a access) in(ch Channel) perm.Permissions { return channelPerm(a.pg, a.member, ch) }
 
 func (a access) role(id uuid.UUID) (Role, bool) {
 	for _, r := range a.roles {

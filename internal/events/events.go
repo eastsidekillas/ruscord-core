@@ -38,6 +38,11 @@ const (
 	MessageCreate = "MESSAGE_CREATE"
 	MessageUpdate = "MESSAGE_UPDATE"
 	MessageDelete = "MESSAGE_DELETE"
+
+	// SessionRevoke goes to the user topic when a sign-in session is revoked
+	// (logout, refresh-token reuse). It is internal: the gateway closes the
+	// connections of that session and never forwards it to clients.
+	SessionRevoke = "SESSION_REVOKE"
 )
 
 // Topics. Gateway nodes subscribe to the guilds and users of their sessions.

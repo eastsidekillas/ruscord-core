@@ -8,33 +8,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats-server/v2/server"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/eastsidekillas/ruscord-core/internal/platform/natstest"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/testdb"
 )
 
 // Needs RUSCORD_TEST_POSTGRES_URL; NATS runs in-process.
-
-func newNATS(t *testing.T) *nats.Conn {
-	t.Helper()
-	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir(), NoLog: true, NoSigs: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv.Start()
-	t.Cleanup(srv.Shutdown)
-	if !srv.ReadyForConnections(5 * time.Second) {
-		t.Fatal("nats not ready")
-	}
-	nc, err := nats.Connect(srv.ClientURL())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(nc.Close)
-	return nc
-}
 
 func write(t *testing.T, pg *pgxpool.Pool, evs ...Event) {
 	t.Helper()
@@ -44,7 +24,7 @@ func write(t *testing.T, pg *pgxpool.Pool, evs ...Event) {
 }
 
 func setup(t *testing.T) (*pgxpool.Pool, *Relay, jetstream.Stream) {
-	pg, nc := testdb.New(t), newNATS(t)
+	pg, nc := testdb.New(t), natstest.New(t)
 	r, err := NewRelay(pg, nc, testdb.Logger())
 	if err != nil {
 		t.Fatal(err)

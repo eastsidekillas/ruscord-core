@@ -66,21 +66,35 @@ type User struct {
 	token string
 }
 
-// User inserts an account directly (auth itself is tested in internal/auth)
-// and signs an access token for it.
+// User inserts an account and a sign-in session directly (auth itself is
+// tested in internal/auth) and signs an access token for it.
 func (e *Env) User(name string) *User {
 	e.T.Helper()
-	id := uuid.Must(uuid.NewV7())
+	id, sid := uuid.Must(uuid.NewV7()), uuid.Must(uuid.NewV7())
 	if _, err := e.PG.Exec(context.Background(),
 		`INSERT INTO users (id, email, username, display_name, password_hash) VALUES ($1, $2, $3::text, $3::text, 'x')`,
 		id, name+"@example.com", name); err != nil {
 		e.T.Fatal(err)
 	}
-	tok, err := e.signer.Issue(auth.Principal{UserID: id, SessionID: uuid.New()}, time.Now())
+	if _, err := e.PG.Exec(context.Background(),
+		`INSERT INTO sessions (id, user_id, refresh_hash, expires_at) VALUES ($1, $2, '\x00', now() + interval '1 day')`,
+		sid, id); err != nil {
+		e.T.Fatal(err)
+	}
+	tok, err := e.signer.Issue(auth.Principal{UserID: id, SessionID: sid}, time.Now())
 	if err != nil {
 		e.T.Fatal(err)
 	}
 	return &User{Env: e, ID: id, token: tok}
+}
+
+// URL is the base URL of the test server.
+func (e *Env) URL() string { return e.srv.URL }
+
+// Ticket issues a gateway ticket for the user.
+func (u *User) Ticket() string {
+	u.Env.T.Helper()
+	return Str(Obj(u.Expect(http.StatusOK, "POST", "/api/v1/gateway/ticket", nil))["ticket"])
 }
 
 // Do sends a request and decodes the JSON answer into a generic value.

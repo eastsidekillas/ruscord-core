@@ -23,6 +23,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/config"
 	"github.com/eastsidekillas/ruscord-core/internal/events"
+	"github.com/eastsidekillas/ruscord-core/internal/gateway"
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/health"
 	"github.com/eastsidekillas/ruscord-core/internal/message"
@@ -92,7 +93,8 @@ func run() error {
 	hc.Register(mux)
 
 	// Modules register their routes here as they land (see docs/roadmap.md).
-	if cfg.Has(config.RoleAPI) {
+	// The gateway reads the same modules as the API, so both roles build them.
+	if cfg.Has(config.RoleAPI) || cfg.Has(config.RoleGateway) {
 		seed := cfg.JWTSeed
 		if seed == nil {
 			seed = make([]byte, ed25519.SeedSize)
@@ -115,21 +117,33 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		authHTTP := auth.NewHandler(svc, !cfg.IsDev())
-		authHTTP.Register(mux)
 		guilds := guild.NewService(clients.PG, svc, limiter)
-		guild.NewHandler(guilds, authHTTP.RequireAuth).Register(mux)
 		socials := social.NewService(clients.PG, svc, guilds, limiter)
-		social.NewHandler(socials, authHTTP.RequireAuth).Register(mux)
 		guilds.OnChannelsDeleted(message.DeleteChannels)
 		socials.OnChannelsDeleted(message.DeleteChannels)
-		message.NewHandler(message.NewService(clients.PG, svc, guilds, socials, limiter), authHTTP.RequireAuth).Register(mux)
 
-		relay, err := events.NewRelay(clients.PG, clients.NATS, log)
-		if err != nil {
-			return err
+		if cfg.Has(config.RoleAPI) {
+			authHTTP := auth.NewHandler(svc, !cfg.IsDev())
+			authHTTP.Register(mux)
+			guild.NewHandler(guilds, authHTTP.RequireAuth).Register(mux)
+			social.NewHandler(socials, authHTTP.RequireAuth).Register(mux)
+			message.NewHandler(message.NewService(clients.PG, svc, guilds, socials, limiter), authHTTP.RequireAuth).Register(mux)
+
+			relay, err := events.NewRelay(clients.PG, clients.NATS, log)
+			if err != nil {
+				return err
+			}
+			go relay.Run(ctx)
 		}
-		go relay.Run(ctx)
+		if cfg.Has(config.RoleGateway) {
+			gw, err := gateway.New(ctx, gateway.Deps{Auth: svc, Guilds: guilds, Social: socials, NATS: clients.NATS, Log: log},
+				gateway.Options{AllowedOrigins: cfg.AllowedOrigins})
+			if err != nil {
+				return err
+			}
+			gw.Register(mux)
+			go gw.Run(ctx)
+		}
 	}
 
 	handler := httpx.Recover(httpx.CheckOrigin(cfg.AllowedOrigins, mux))
