@@ -213,7 +213,7 @@ func run() error {
 
 	// metrics.HTTP sits right around the mux: it reads the matched pattern,
 	// which the mux sets on the request it is given.
-	handler := httpx.Recover(httpx.CheckOrigin(cfg.AllowedOrigins, metrics.HTTP(reg, mux)))
+	handler := httpx.Recover(httpx.TrustProxies(cfg.TrustedProxies, httpx.CheckOrigin(cfg.AllowedOrigins, metrics.HTTP(reg, mux))))
 	return httpx.Run(ctx, log, cfg.HTTPAddr, handler, cfg.ShutdownTimeout)
 }
 

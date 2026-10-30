@@ -57,6 +57,9 @@ type Config struct {
 	// MetricsAddr serves GET /metrics on its own listener, never through the
 	// public proxy. "off" disables it.
 	MetricsAddr string
+	// TrustedProxies are reverse proxies whose X-Forwarded-For is believed
+	// (per-IP rate limits need the real client address, ADR-0020).
+	TrustedProxies []netip.Prefix
 }
 
 func (c Config) IsDev() bool { return c.Env == "dev" }
