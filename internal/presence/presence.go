@@ -144,16 +144,16 @@ func (s *Service) Refresh(ctx context.Context, user uuid.UUID, choice Status) (S
 		for i, sid := range sids {
 			keys[i] = sessionKey(user, sid)
 		}
-		vals, err := s.rdb.MGet(ctx, keys...).Result()
+		vals, err := mget(ctx, s.rdb, keys)
 		if err != nil {
 			return "", fmt.Errorf("presence: session states: %w", err)
 		}
 		var gone []any
-		for i, v := range vals {
-			if str, ok := v.(string); ok {
+		for i, sid := range sids { // mget returned one value per key
+			if str, ok := vals[i].(string); ok {
 				states = append(states, Status(str))
 			} else {
-				gone = append(gone, sids[i]) // expired: its node died or it never said goodbye
+				gone = append(gone, sid) // expired: its node died or it never said goodbye
 			}
 		}
 		if len(gone) > 0 {
@@ -212,16 +212,29 @@ func (s *Service) Statuses(ctx context.Context, users []uuid.UUID) (map[uuid.UUI
 	for i, u := range users {
 		keys[i] = lastKey(u)
 	}
-	vals, err := s.rdb.MGet(ctx, keys...).Result()
+	vals, err := mget(ctx, s.rdb, keys)
 	if err != nil {
 		return nil, fmt.Errorf("presence: statuses: %w", err)
 	}
-	for i, v := range vals {
+	for i, u := range users { // mget returned one value per key
 		st := Offline
-		if str, ok := v.(string); ok {
+		if str, ok := vals[i].(string); ok {
 			st = Status(str)
 		}
-		out[users[i]] = st
+		out[u] = st
 	}
 	return out, nil
+}
+
+// mget is MGET that guarantees one value per key, so callers can index the
+// keys by the position of a value.
+func mget(ctx context.Context, rdb *redis.Client, keys []string) ([]any, error) {
+	vals, err := rdb.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+	if len(vals) != len(keys) {
+		return nil, fmt.Errorf("MGET returned %d values for %d keys", len(vals), len(keys))
+	}
+	return vals, nil
 }
