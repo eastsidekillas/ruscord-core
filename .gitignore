@@ -4,6 +4,7 @@
 *.test
 coverage.out
 test-docker.log
+/backups/
 .DS_Store
 .idea/
 .vscode/

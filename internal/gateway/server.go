@@ -184,6 +184,14 @@ func (s *Server) shutdown() {
 	})
 }
 
+// SessionCount is the number of sessions this node holds (attached or
+// waiting for RESUME), for metrics.
+func (s *Server) SessionCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.sessions)
+}
+
 func (s *Server) snapshot() []*session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
