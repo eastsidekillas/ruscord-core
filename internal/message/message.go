@@ -56,10 +56,11 @@ type Service struct {
 	guilds  GuildChannels
 	dms     DMChannels
 	limiter *ratelimit.Limiter
+	eph     events.EphemeralPublisher
 }
 
-func NewService(pg *pgxpool.Pool, users auth.Directory, guilds GuildChannels, dms DMChannels, limiter *ratelimit.Limiter) *Service {
-	return &Service{pg: pg, users: users, guilds: guilds, dms: dms, limiter: limiter}
+func NewService(pg *pgxpool.Pool, users auth.Directory, guilds GuildChannels, dms DMChannels, limiter *ratelimit.Limiter, eph events.EphemeralPublisher) *Service {
+	return &Service{pg: pg, users: users, guilds: guilds, dms: dms, limiter: limiter, eph: eph}
 }
 
 type Message struct {
@@ -83,6 +84,8 @@ type channel struct {
 	guildID *uuid.UUID
 	perms   perm.Permissions
 	topic   string
+	// ephTopic carries ephemeral events (typing) of the channel.
+	ephTopic string
 }
 
 // resolve finds the channel in the guild module, then in the social module.
@@ -93,7 +96,7 @@ func (s *Service) resolve(ctx context.Context, userID, channelID uuid.UUID) (cha
 		if typ != guild.ChannelText {
 			return channel{}, errNotText
 		}
-		return channel{id: channelID, guildID: &gid, perms: p, topic: events.GuildTopic(gid)}, nil
+		return channel{id: channelID, guildID: &gid, perms: p, topic: events.GuildTopic(gid), ephTopic: events.EphGuildTopic(gid)}, nil
 	}
 	if !errors.Is(err, httpx.ErrNotFound) {
 		return channel{}, err
@@ -102,7 +105,7 @@ func (s *Service) resolve(ctx context.Context, userID, channelID uuid.UUID) (cha
 	if err != nil {
 		return channel{}, err
 	}
-	return channel{id: channelID, perms: p, topic: events.ChannelTopic(channelID)}, nil
+	return channel{id: channelID, perms: p, topic: events.ChannelTopic(channelID), ephTopic: events.EphChannelTopic(channelID)}, nil
 }
 
 const msgCols = `id, channel_id, guild_id, author_id, content, nonce, reply_to, mention_everyone, created_at, edited_at`
@@ -347,4 +350,35 @@ func (s *Service) Delete(ctx context.Context, userID, channelID, id uuid.UUID) e
 func DeleteChannels(ctx context.Context, tx pgx.Tx, channelIDs []uuid.UUID) error {
 	_, err := tx.Exec(ctx, `DELETE FROM messages WHERE channel_id = ANY($1)`, channelIDs)
 	return err
+}
+
+// ruleTyping is how often one user's typing in one channel is relayed;
+// clients show the indicator for 10 s and resend while typing.
+var ruleTyping = ratelimit.Rule{Name: "typing", Limit: 1, Window: 5 * time.Second}
+
+// Typing is the payload of TYPING_START.
+type Typing struct {
+	ChannelID uuid.UUID  `json:"channel_id"`
+	GuildID   *uuid.UUID `json:"guild_id,omitempty"`
+	UserID    uuid.UUID  `json:"user_id"`
+	Timestamp time.Time  `json:"timestamp"`
+}
+
+// Typing tells the people who see the channel that userID is typing. It
+// needs SEND_MESSAGES there. Calls above the rate are dropped silently:
+// the indicator is already showing, and a 429 would only make clients retry.
+func (s *Service) Typing(ctx context.Context, userID, channelID uuid.UUID) error {
+	ch, err := s.resolve(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	if !ch.perms.Has(perm.SendMessages) {
+		return httpx.ErrForbidden
+	}
+	ok, _, err := s.limiter.Allow(ctx, ruleTyping, userID.String()+":"+channelID.String())
+	if err != nil || !ok {
+		return err
+	}
+	return s.eph.Publish(ch.ephTopic, events.TypingStart,
+		Typing{ChannelID: channelID, GuildID: ch.guildID, UserID: userID, Timestamp: time.Now().UTC()})
 }

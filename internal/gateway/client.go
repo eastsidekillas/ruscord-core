@@ -9,6 +9,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
+	"github.com/eastsidekillas/ruscord-core/internal/presence"
 )
 
 // client drives one connection: handshake, heartbeats and limits.
@@ -75,10 +76,26 @@ func (cl *client) run(ctx context.Context, version string) {
 				continue
 			}
 			heartbeatTimer.Reset(heartbeatTimeout)
-			if cl.sess != nil && seq != nil {
-				cl.sess.ack(*seq)
+			if cl.sess != nil {
+				if seq != nil {
+					cl.sess.ack(*seq)
+				}
+				cl.sess.touch() // before the ack: an ack means the heartbeat counted
 			}
 			c.send(encode(outFrame{Op: opHeartbeatAck}))
+		case opPresence:
+			var d struct {
+				Status presence.Status `json:"status"`
+			}
+			if json.Unmarshal(f.D, &d) != nil || !presence.ValidSession(d.Status) {
+				c.kick(closeDecodeError, "invalid presence")
+				continue
+			}
+			if cl.sess == nil {
+				c.kick(closeNotAuthenticated, "not authenticated")
+				continue
+			}
+			cl.sess.setState(d.Status)
 		case opIdentify, opResume:
 			if cl.sess != nil {
 				c.kick(closeAlreadyAuthenticated, "already authenticated")

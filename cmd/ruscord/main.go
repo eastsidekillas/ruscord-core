@@ -30,6 +30,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/logx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/store"
+	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 	"github.com/eastsidekillas/ruscord-core/internal/social"
 )
@@ -119,6 +120,10 @@ func run() error {
 		}
 		guilds := guild.NewService(clients.PG, svc, limiter)
 		socials := social.NewService(clients.PG, svc, guilds, limiter)
+		eph := events.NewEphemeral(clients.NATS)
+		gwOpts := gateway.Options{AllowedOrigins: cfg.AllowedOrigins}
+		pres := presence.NewService(clients.Redis, eph, guilds, gateway.PresenceTTL(gwOpts))
+		guilds.WithPresences(pres)
 		guilds.OnChannelsDeleted(message.DeleteChannels)
 		socials.OnChannelsDeleted(message.DeleteChannels)
 
@@ -127,7 +132,7 @@ func run() error {
 			authHTTP.Register(mux)
 			guild.NewHandler(guilds, authHTTP.RequireAuth).Register(mux)
 			social.NewHandler(socials, authHTTP.RequireAuth).Register(mux)
-			message.NewHandler(message.NewService(clients.PG, svc, guilds, socials, limiter), authHTTP.RequireAuth).Register(mux)
+			message.NewHandler(message.NewService(clients.PG, svc, guilds, socials, limiter, eph), authHTTP.RequireAuth).Register(mux)
 
 			relay, err := events.NewRelay(clients.PG, clients.NATS, log)
 			if err != nil {
@@ -136,8 +141,8 @@ func run() error {
 			go relay.Run(ctx)
 		}
 		if cfg.Has(config.RoleGateway) {
-			gw, err := gateway.New(ctx, gateway.Deps{Auth: svc, Guilds: guilds, Social: socials, NATS: clients.NATS, Log: log},
-				gateway.Options{AllowedOrigins: cfg.AllowedOrigins})
+			gw, err := gateway.New(ctx, gateway.Deps{Auth: svc, Guilds: guilds, Social: socials, Presence: pres,
+				NATS: clients.NATS, Log: log}, gwOpts)
 			if err != nil {
 				return err
 			}

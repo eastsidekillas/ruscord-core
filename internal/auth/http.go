@@ -34,6 +34,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/auth/refresh", httpx.Handle(h.refresh))
 	mux.Handle("POST /api/v1/auth/logout", httpx.Handle(h.logout))
 	mux.Handle("GET /api/v1/users/@me", h.RequireAuth(httpx.Handle(h.me)))
+	mux.Handle("PATCH /api/v1/users/@me", h.RequireAuth(httpx.Handle(h.updateMe)))
 	mux.Handle("POST /api/v1/gateway/ticket", h.RequireAuth(httpx.Handle(h.ticket)))
 }
 
@@ -110,6 +111,19 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) error {
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) error {
 	u, err := h.svc.Me(r.Context(), PrincipalFrom(r.Context()))
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, u)
+	return nil
+}
+
+func (h *Handler) updateMe(w http.ResponseWriter, r *http.Request) error {
+	var in UpdateMeInput
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		return err
+	}
+	u, err := h.svc.UpdateMe(r.Context(), PrincipalFrom(r.Context()), in)
 	if err != nil {
 		return err
 	}

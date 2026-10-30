@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,8 +29,11 @@ type Env struct {
 	PG          *pgxpool.Pool
 	Auth        *auth.Service
 	Limiter     *ratelimit.Limiter
+	Redis       *redis.Client // in-memory Valkey (miniredis)
 	RequireAuth func(http.Handler) http.Handler
 	Mux         *http.ServeMux
+	// Eph records ephemeral events, for modules that publish them.
+	Eph *EphRecorder
 
 	srv    *httptest.Server
 	signer *auth.Signer
@@ -56,8 +60,8 @@ func New(t *testing.T) *Env {
 	authHTTP.Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &Env{T: t, PG: pg, Auth: authSvc, Limiter: limiter, RequireAuth: authHTTP.RequireAuth,
-		Mux: mux, srv: srv, signer: signer}
+	return &Env{T: t, PG: pg, Auth: authSvc, Limiter: limiter, Redis: rdb, RequireAuth: authHTTP.RequireAuth,
+		Mux: mux, Eph: &EphRecorder{}, srv: srv, signer: signer}
 }
 
 type User struct {
@@ -126,6 +130,35 @@ func (u *User) Expect(want int, method, path string, body any) any {
 	if got != want {
 		u.Env.T.Fatalf("%s %s: status %d, want %d: %v", method, path, got, want, out)
 	}
+	return out
+}
+
+// EphMsg is one recorded ephemeral event.
+type EphMsg struct {
+	Subject string
+	Type    string
+	Data    any
+}
+
+// EphRecorder implements events.EphemeralPublisher by remembering events.
+type EphRecorder struct {
+	mu   sync.Mutex
+	msgs []EphMsg
+}
+
+func (r *EphRecorder) Publish(subject, typ string, data any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.msgs = append(r.msgs, EphMsg{subject, typ, data})
+	return nil
+}
+
+// Take returns the events recorded since the last call.
+func (r *EphRecorder) Take() []EphMsg {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.msgs
+	r.msgs = nil
 	return out
 }
 

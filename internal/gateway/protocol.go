@@ -17,6 +17,7 @@ const (
 	opDispatch     = 0  // ← event; s is the session sequence number
 	opHeartbeat    = 1  // → d: the last s the client received, or null
 	opIdentify     = 2  // → d: {ticket}
+	opPresence     = 3  // → d: {status}: this device is "online" (in use) or "idle"
 	opResume       = 6  // → d: {ticket, session_id, seq}
 	opHello        = 10 // ← d: {heartbeat_interval} (milliseconds), first frame
 	opHeartbeatAck = 11 // ← reply to every heartbeat

@@ -15,11 +15,13 @@ import (
 )
 
 type User struct {
-	ID           uuid.UUID `json:"id"`
-	Email        string    `json:"email"`
-	Username     string    `json:"username"`
-	DisplayName  string    `json:"display_name"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID          uuid.UUID `json:"id"`
+	Email       string    `json:"email"`
+	Username    string    `json:"username"`
+	DisplayName string    `json:"display_name"`
+	CreatedAt   time.Time `json:"created_at"`
+	// Status is the presence the user chose (online, idle, dnd, invisible).
+	Status       string `json:"status"`
 	passwordHash string
 }
 
@@ -90,17 +92,19 @@ func insertSession(ctx context.Context, db execer, sess session, device string, 
 
 func (s *store) userByEmail(ctx context.Context, email string) (User, error) {
 	return scanUser(s.pg.QueryRow(ctx,
-		`SELECT id, email, username, display_name, created_at, password_hash FROM users WHERE email = $1`, email))
+		`SELECT `+userCols+` FROM users WHERE email = $1`, email))
 }
 
 func (s *store) userByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return scanUser(s.pg.QueryRow(ctx,
-		`SELECT id, email, username, display_name, created_at, password_hash FROM users WHERE id = $1`, id))
+		`SELECT `+userCols+` FROM users WHERE id = $1`, id))
 }
+
+const userCols = `id, email, username, display_name, created_at, status, password_hash`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.DisplayName, &u.CreatedAt, &u.passwordHash)
+	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.DisplayName, &u.CreatedAt, &u.Status, &u.passwordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, errNotFound
 	}
@@ -158,4 +162,20 @@ func (s *store) sessionActive(ctx context.Context, id uuid.UUID, now time.Time) 
 	err := s.pg.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1 AND revoked_at IS NULL AND expires_at > $2)`, id, now).Scan(&ok)
 	return ok, err
+}
+
+// setStatus stores the chosen status and tells the user's own sessions in
+// the same transaction.
+func (s *store) setStatus(ctx context.Context, id uuid.UUID, status string) (User, error) {
+	var u User
+	err := pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
+		var err error
+		u, err = scanUser(tx.QueryRow(ctx,
+			`UPDATE users SET status = $2, updated_at = now() WHERE id = $1 RETURNING `+userCols, id, status))
+		if err != nil {
+			return err
+		}
+		return events.Write(ctx, tx, events.Event{Topic: events.UserTopic(id), Type: events.UserUpdate, Data: u})
+	})
+	return u, err
 }

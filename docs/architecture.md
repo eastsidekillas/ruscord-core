@@ -95,6 +95,12 @@ attachments, read_states, relationships, invites, calls, outbox
 `channel_permissions`, а gateway при их изменении присылает
 `GUILD_PERMISSIONS_UPDATE`. Клиент правила прав не реализует.
 
+Шаг 5b-1 (ADR-0018): эфемерные события «печатает» и статусы идут не через
+outbox, а через обычные subject'ы NATS `eph.*`; gateway держит одну подписку на
+subject на ноду и фильтрует их тем же router. Модуль `internal/presence` хранит
+живые сессии в Valkey с TTL и публикует изменение видимого статуса друзьям и
+серверам до 250 участников. Выбранный статус — `users.status` в auth.
+
 ## Права
 
 Пакет `internal/perm` (ADR-0011), чистые функции без БД:

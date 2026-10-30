@@ -39,8 +39,14 @@ origin задаёт `RUSCORD_ALLOWED_ORIGINS`.
 | `POST /auth/logout` | — (cookie `rc_rt`) | 204, стирает cookie | — |
 | `GET /users/@me` | — | 200, пользователь | 401 |
 | `POST /gateway/ticket` | — | 200 `{ticket, expires_in: 30}` | 401, 429 |
+| `PATCH /users/@me` | `{status}` | 200, пользователь | 401, 422, 429 |
 
-Пользователь: `{id, email, username, display_name, created_at}`.
+Пользователь: `{id, email, username, display_name, created_at, status}`.
+
+`status` — статус, который пользователь выбрал: `online`, `idle`, `dnd` или
+`invisible`. Другие видят `offline`, если вы не в сети или выбрали `invisible`
+(см. «Статусы» в разделе gateway). Смена статуса: 10 в минуту; изменение
+приходит вашим сессиям событием `USER_UPDATE` с полным объектом пользователя.
 
 Правила полей: `username` от 2 до 32 символов из латиницы, цифр, `_` и `.`, без
 `..`, уникален без учёта регистра; `display_name` от 1 до 32 символов, по
@@ -97,7 +103,10 @@ username; email уникален без учёта регистра.
 и позиция 0. Его нельзя удалить, переименовать, переместить или выдать
 (400 `everyone_role`, у каждого случая свой текст), но можно менять его права.
 
-Участник: `{guild_id, user_id, nick, roles, joined_at, user: {id, username, display_name}}`.
+Участник: `{guild_id, user_id, nick, roles, joined_at, user: {id, username, display_name}, status?}`.
+`status` (`online`, `idle`, `dnd`, `offline`) есть только в `GET /guilds/{id}/members`
+и только на серверах до 250 участников: на больших статусы участников в MVP не
+показываются (ADR-0018).
 
 События (уходят через gateway с шага 5): `GUILD_CREATE`, `GUILD_UPDATE`,
 `GUILD_DELETE`, `CHANNEL_CREATE/UPDATE/DELETE`, `GUILD_ROLE_CREATE/UPDATE/DELETE`
@@ -212,6 +221,15 @@ nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
 События: `MESSAGE_CREATE`, `MESSAGE_UPDATE`, `MESSAGE_DELETE {id, channel_id, guild_id?}`
 в топик сервера или `channel.<id>` для личек.
 
+### «Печатает»
+
+`POST /channels/{id}/typing` → 204. Нужно право `SEND_MESSAGES` в канале (как
+для отправки: 404 для скрытого и чужого канала, 400 `not_text_channel`, 403
+без права или в личке с блокировкой). Клиент шлёт его при наборе не чаще раза в
+5 с; более частые вызовы отвечают 204 и ничего не рассылают. Другие получают
+`TYPING_START {channel_id, guild_id?, user_id, timestamp}` и показывают индикатор
+10 с или до сообщения от того же автора.
+
 Во всех текстовых полях символ NUL запрещён (422).
 
 ## Gateway (WebSocket)
@@ -227,6 +245,7 @@ nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
 | 10 HELLO | ← | первый кадр после подключения | `{heartbeat_interval}` в мс |
 | 2 IDENTIFY | → | новая сессия | `{ticket}` |
 | 6 RESUME | → | продолжить сессию после обрыва | `{ticket, session_id, seq}` |
+| 3 PRESENCE_UPDATE | → | устройство в работе или бездействует | `{status: "online" \| "idle"}` |
 | 0 DISPATCH | ← | событие, `t` — тип, `s` — номер | объект события |
 | 1 HEARTBEAT | → | раз в `heartbeat_interval` | последний полученный `s` или `null` (можно не передавать) |
 | 11 HEARTBEAT_ACK | ← | ответ на каждый heartbeat | `null` |
@@ -237,9 +256,10 @@ nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
    открыть сокет, дождаться HELLO.
 2. В течение 10 с отправить IDENTIFY или RESUME с новым тикетом. Тикет
    передаётся в кадре, а не в URL, чтобы не попадать в логи прокси.
-3. IDENTIFY → `READY` (`s = 1`): `{v, session_id, user, guilds, dms, relationships}`.
+3. IDENTIFY → `READY` (`s = 1`): `{v, session_id, user, guilds, dms, relationships, presences}`.
    `guilds` — серверы в том же виде, что `GET /guilds/{id}` (без скрытых
-   каналов), `dms` и `relationships` — как в REST.
+   каналов), `dms` и `relationships` — как в REST, `presences` —
+   `[{user_id, status}]` друзей, которые не `offline` (остальные — `offline`).
 4. Дальше DISPATCH с `s`, растущим на единицу. Клиент хранит последний `s` и
    отправляет его в heartbeat: подтверждённые кадры сервер больше не хранит.
 5. После обрыва: новый тикет, RESUME с `session_id` и последним `s`. Сервер
@@ -284,6 +304,9 @@ Heartbeat нужно слать каждые `heartbeat_interval` (30 с); бе�
 | `MESSAGE_*` в канале сервера | тем, кто видит канал (`VIEW_CHANNEL`) |
 | `MESSAGE_*` в личке, `CHANNEL_*` личек, `CHANNEL_RECIPIENT_*` | участникам лички |
 | `RELATIONSHIP_*` | вам |
+| `USER_UPDATE` | вашим сессиям, когда изменился ваш аккаунт (сейчас — выбранный статус) |
+| `TYPING_START` | тем, кто видит канал; кроме вас самих |
+| `PRESENCE_UPDATE {user_id, status}` | друзьям и участникам общих серверов до 250 человек; одно изменение приходит один раз, даже если вы делите несколько серверов |
 
 Клиент обрабатывает `*_CREATE` и `*_UPDATE` как вставку или замену по id:
 после IDENTIFY личные события (связи, лички, `GUILD_CREATE`) и сообщения,
@@ -291,3 +314,21 @@ Heartbeat нужно слать каждые `heartbeat_interval` (30 с); бе�
 уже вошедшие в READY, повторно не приходят. Свой `GUILD_MEMBER_ADD` при входе на сервер не приходит: вы уже есть в
 `GUILD_CREATE`. Права никогда не пересчитываются на клиенте: актуальные
 значения приходят в `GUILD_PERMISSIONS_UPDATE`.
+
+### Статусы
+
+- Устройство сообщает, используется ли оно: `{op: 3, d: {status: "online" | "idle"}}`
+  (`idle` — после бездействия, `online` — при возвращении). Другие значения
+  закрывают соединение кодом 4002, до IDENTIFY — 4003. По умолчанию после
+  IDENTIFY устройство `online`.
+- Видимый другим статус: `offline`, если нет ни одной сессии или выбран
+  `invisible`; иначе выбранный `dnd` или `idle`; иначе `online`, если хоть одно
+  устройство в работе, и `idle`, если все бездействуют.
+- После обрыва сети статус держится окно RESUME (2 минуты), чтобы
+  переподключение не мигало у друзей. Закрытие вкладки (код 1000/1001)
+  показывает `offline` сразу. При перезапуске сервера (1012) статус не
+  сбрасывается.
+- `TYPING_START` и `PRESENCE_UPDATE` не хранятся и не повторяются при RESUME:
+  пропущенный статус восстановится при следующем изменении или в READY,
+  статусы участников сервера — в `GET /guilds/{id}/members`. Новому другу его
+  текущий статус приходит сразу после `RELATIONSHIP_ADD`, если он не `offline`.

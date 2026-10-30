@@ -19,6 +19,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/hooks"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/slicex"
+	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
 
@@ -52,7 +53,16 @@ type Service struct {
 	now     func() time.Time
 
 	channelsDeleted hooks.ChannelsDeleted
+	presences       Presences
 }
+
+// Presences tells what others see of users; presence.Service implements it.
+type Presences interface {
+	Statuses(ctx context.Context, users []uuid.UUID) (map[uuid.UUID]presence.Status, error)
+}
+
+// WithPresences makes the member list carry statuses (small guilds only).
+func (s *Service) WithPresences(p Presences) { s.presences = p }
 
 // OnChannelsDeleted registers the hook run when channels are deleted
 // (one channel, or every channel of a deleted guild).
@@ -879,7 +889,50 @@ func (s *Service) ListMembers(ctx context.Context, userID, guildID uuid.UUID, af
 	if err != nil {
 		return nil, err
 	}
-	return ms, s.attachUsers(ctx, slicex.Ptrs(ms))
+	if err := s.attachUsers(ctx, slicex.Ptrs(ms)); err != nil {
+		return nil, err
+	}
+	return ms, s.attachStatuses(ctx, guildID, ms)
+}
+
+// attachStatuses fills Status in guilds small enough to carry presence; in
+// bigger ones the client gets no statuses and no PRESENCE_UPDATE either.
+func (s *Service) attachStatuses(ctx context.Context, guildID uuid.UUID, ms []Member) error {
+	if s.presences == nil || len(ms) == 0 {
+		return nil
+	}
+	var n int
+	if err := s.pg.QueryRow(ctx, `SELECT count(*) FROM members WHERE guild_id = $1`, guildID).Scan(&n); err != nil {
+		return err
+	}
+	if n > presence.MaxGuildMembers {
+		return nil
+	}
+	ids := make([]uuid.UUID, len(ms))
+	for i, m := range ms {
+		ids[i] = m.UserID
+	}
+	st, err := s.presences.Statuses(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range ms {
+		ms[i].Status = st[ms[i].UserID]
+	}
+	return nil
+}
+
+// SmallGuilds returns the guilds of user with at most max members: those
+// where a change of the user's presence is broadcast (internal/presence).
+func (s *Service) SmallGuilds(ctx context.Context, user uuid.UUID, max int) ([]uuid.UUID, error) {
+	rows, err := s.pg.Query(ctx,
+		`SELECT m.guild_id FROM members m
+		 WHERE m.user_id = $1 AND (SELECT count(*) FROM members x WHERE x.guild_id = m.guild_id) <= $2
+		 ORDER BY m.guild_id`, user, max)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 }
 
 // SetMemberRole adds (add=true) or removes a role. The caller must be able to

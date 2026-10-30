@@ -16,6 +16,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/natstest"
+	"github.com/eastsidekillas/ruscord-core/internal/presence"
 )
 
 // Every way a connection can be refused or cut, with the close code the
@@ -51,6 +52,15 @@ func TestHandshakeCloseCodes(t *testing.T) {
 		{name: "heartbeat with junk", run: func(c *wsClient) { c.send(opHeartbeat, "seven") }, want: closeDecodeError},
 		{name: "identify with junk", run: func(c *wsClient) { c.send(opIdentify, 5) }, want: closeDecodeError},
 		{name: "unknown opcode", run: func(c *wsClient) { c.send(42, nil) }, want: closeUnknownOpcode},
+		{name: "presence before identify", run: func(c *wsClient) { c.send(opPresence, map[string]string{"status": "idle"}) }, want: closeNotAuthenticated},
+		{name: "presence with a choice, not a device state", run: func(c *wsClient) {
+			identify(c, h.user())
+			c.send(opPresence, map[string]string{"status": "dnd"})
+		}, want: closeDecodeError},
+		{name: "presence with junk", run: func(c *wsClient) {
+			identify(c, h.user())
+			c.send(opPresence, "idle")
+		}, want: closeDecodeError},
 		{name: "client sends a dispatch", run: func(c *wsClient) { c.send(opDispatch, nil) }, want: closeUnknownOpcode},
 		{name: "unknown ticket", run: func(c *wsClient) { c.send(opIdentify, map[string]string{"ticket": "nope"}) }, want: closeAuthFailed},
 		{name: "empty ticket", run: func(c *wsClient) { c.send(opIdentify, map[string]string{}) }, want: closeAuthFailed},
@@ -457,5 +467,112 @@ func TestEndClosesAttachedConnection(t *testing.T) {
 	}
 	if h.srv.lookup(ready.SessionID) != nil {
 		t.Fatal("ended session still registered")
+	}
+}
+
+// statusOf reads the next frame, which must be PRESENCE_UPDATE about user.
+func statusOf(t *testing.T, c *wsClient, user uuid.UUID) presence.Status {
+	t.Helper()
+	var p presence.Update
+	if err := json.Unmarshal(c.expectDispatch(events.PresenceUpdate).D, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.UserID != user {
+		t.Fatalf("presence of %s, want %s", p.UserID, user)
+	}
+	return p.Status
+}
+
+// Friends see each other come, go idle and leave, across several devices;
+// invisible looks offline; a node restart does not blink anyone offline.
+func TestPresenceOverGateway(t *testing.T) {
+	h := newHarness(t, Options{})
+	alice, bob := h.user(), h.user()
+	h.social.befriend(alice.UserID, bob.UserID)
+	aw, ready := h.connect(alice)
+	if len(ready.Presences) != 0 {
+		t.Fatalf("READY presences with everyone offline: %v", ready.Presences)
+	}
+
+	b1, _ := h.connect(bob)
+	if st := statusOf(t, aw, bob.UserID); st != presence.Online {
+		t.Fatalf("bob connected: %s", st)
+	}
+	b1.send(opPresence, map[string]string{"status": "idle"})
+	if st := statusOf(t, aw, bob.UserID); st != presence.Idle {
+		t.Fatalf("bob idle: %s", st)
+	}
+	// A second device in use makes him online again; it closing makes him idle.
+	b2, _ := h.connect(auth.Principal{UserID: bob.UserID, SessionID: uuid.New()})
+	if st := statusOf(t, aw, bob.UserID); st != presence.Online {
+		t.Fatalf("second device: %s", st)
+	}
+	_ = b2.ws.Close(websocket.StatusNormalClosure, "")
+	if st := statusOf(t, aw, bob.UserID); st != presence.Idle {
+		t.Fatalf("second device closed: %s", st)
+	}
+
+	// A new connection of Alice gets Bob's status in READY.
+	_, again := h.connect(auth.Principal{UserID: alice.UserID, SessionID: uuid.New()})
+	if len(again.Presences) != 1 || again.Presences[0] != (presence.Update{UserID: bob.UserID, Status: presence.Idle}) {
+		t.Fatalf("READY presences: %v", again.Presences)
+	}
+	// Alice herself is not told about her own devices.
+	_ = b1.ws.Close(websocket.StatusNormalClosure, "")
+	if st := statusOf(t, aw, bob.UserID); st != presence.Offline {
+		t.Fatalf("bob left: %s", st)
+	}
+
+	// Carol is invisible: Alice learns nothing, and reads her as offline.
+	carol := h.user()
+	h.auth.mu.Lock()
+	h.auth.status[carol.UserID] = "invisible"
+	h.auth.mu.Unlock()
+	h.social.befriend(alice.UserID, carol.UserID)
+	h.connect(carol)
+	if st, _ := h.pres.Statuses(t.Context(), []uuid.UUID{carol.UserID}); st[carol.UserID] != presence.Offline {
+		t.Fatalf("invisible user reads as %s", st[carol.UserID])
+	}
+
+	// Dave's status survives his node restarting: it is not dropped, so his
+	// friends see no offline-online blink on a deploy.
+	dave := h.user()
+	h.connect(dave)
+	h.cancel()
+	time.Sleep(200 * time.Millisecond)
+	if st, _ := h.pres.Statuses(t.Context(), []uuid.UUID{dave.UserID}); st[dave.UserID] != presence.Online {
+		t.Fatalf("after a restart dave reads as %s", st[dave.UserID])
+	}
+	// The other frames Alice got before the restart are presence only: no
+	// update about Carol leaked.
+	for {
+		f, code := aw.read(time.Second)
+		if code != 0 {
+			break
+		}
+		if f.T == events.PresenceUpdate && bytes.Contains(f.D, []byte(carol.UserID.String())) {
+			t.Fatalf("invisible carol leaked: %s", f.D)
+		}
+	}
+}
+
+// Heartbeats keep a long session online: without them its presence would
+// expire after one TTL even though the connection is alive.
+func TestHeartbeatKeepsPresence(t *testing.T) {
+	h := newHarness(t, Options{Heartbeat: time.Hour}) // the server must not time out while Valkey time jumps
+	bob := h.user()
+	c, _ := h.connect(bob)
+	ttl := h.pres.TTL()
+	for range 4 {
+		h.mr.FastForward(ttl * 2 / 3)
+		c.send(opHeartbeat, nil)
+		c.expectOp(opHeartbeatAck)
+	}
+	if st, _ := h.pres.Statuses(t.Context(), []uuid.UUID{bob.UserID}); st[bob.UserID] != presence.Online {
+		t.Fatalf("after %s with heartbeats bob reads as %s", ttl*8/3, st[bob.UserID])
+	}
+	h.mr.FastForward(ttl + time.Second) // no heartbeats: the node is presumed dead
+	if st, _ := h.pres.Statuses(t.Context(), []uuid.UUID{bob.UserID}); st[bob.UserID] != presence.Offline {
+		t.Fatalf("without heartbeats bob still reads as %s", st[bob.UserID])
 	}
 }

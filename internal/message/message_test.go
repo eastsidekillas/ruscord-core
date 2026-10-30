@@ -3,12 +3,14 @@ package message
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/apitest"
@@ -30,7 +32,7 @@ func newEnv(t *testing.T) *env {
 	socials.OnChannelsDeleted(DeleteChannels)
 	guild.NewHandler(guilds, e.RequireAuth).Register(e.Mux)
 	social.NewHandler(socials, e.RequireAuth).Register(e.Mux)
-	NewHandler(NewService(e.PG, e.Auth, guilds, socials, e.Limiter), e.RequireAuth).Register(e.Mux)
+	NewHandler(NewService(e.PG, e.Auth, guilds, socials, e.Limiter, e.Eph), e.RequireAuth).Register(e.Mux)
 	return &env{Env: e, guilds: guilds, socials: socials}
 }
 
@@ -255,4 +257,64 @@ func TestSendRateLimit(t *testing.T) {
 		send(owner, text, "спам")
 	}
 	owner.Expect(http.StatusTooManyRequests, "POST", msgs(text), map[string]any{"content": "ещё"})
+}
+
+// Typing goes out as one ephemeral event per window, never through the
+// outbox, and only for people who could send a message there.
+func TestTyping(t *testing.T) {
+	e := newEnv(t)
+	owner, bob, eve := e.User("owner"), e.User("bob"), e.User("eve")
+	gid, text, voice := e.server(owner, bob)
+	typing := func(ch string) string { return "/api/v1/channels/" + ch + "/typing" }
+
+	bob.Expect(http.StatusNoContent, "POST", typing(text), nil)
+	got := e.Eph.Take()
+	if len(got) != 1 || got[0].Subject != events.EphGuildTopic(uuid.MustParse(gid)) || got[0].Type != events.TypingStart {
+		t.Fatalf("published %+v", got)
+	}
+	ty := got[0].Data.(Typing)
+	if ty.UserID != bob.ID || ty.ChannelID.String() != text || ty.GuildID == nil || ty.GuildID.String() != gid || ty.Timestamp.IsZero() {
+		t.Fatalf("payload %+v", ty)
+	}
+	// Within the window: 204, but nothing is sent again.
+	bob.Expect(http.StatusNoContent, "POST", typing(text), nil)
+	if n := len(e.Eph.Take()); n != 0 {
+		t.Fatalf("%d events inside the window", n)
+	}
+	// Someone else in the same channel is not throttled by Bob.
+	owner.Expect(http.StatusNoContent, "POST", typing(text), nil)
+	if n := len(e.Eph.Take()); n != 1 {
+		t.Fatalf("owner typing: %d events", n)
+	}
+
+	// Not text, not a member, not existing: same answers as sending.
+	bob.Expect(http.StatusBadRequest, "POST", typing(voice), nil)
+	eve.Expect(http.StatusNotFound, "POST", typing(text), nil)
+	bob.Expect(http.StatusNotFound, "POST", typing(uuid.NewString()), nil)
+	// Read-only: cannot type there either; hidden: does not exist.
+	ow := "/api/v1/channels/" + text + "/permissions/" + gid
+	owner.Expect(http.StatusOK, "PUT", ow, map[string]any{"type": 1, "deny": permStr(perm.SendMessages)})
+	bob.Expect(http.StatusForbidden, "POST", typing(text), nil)
+	owner.Expect(http.StatusOK, "PUT", ow, map[string]any{"type": 1, "deny": permStr(perm.ViewChannel)})
+	bob.Expect(http.StatusNotFound, "POST", typing(text), nil)
+	if n := len(e.Eph.Take()); n != 0 {
+		t.Fatalf("%d events from refused requests", n)
+	}
+	if types := e.OutboxTypes(); slices.Contains(types, events.TypingStart) {
+		t.Fatal("typing must never be written to the outbox")
+	}
+
+	// A DM goes to the channel's ephemeral subject.
+	ann := e.User("ann")
+	ann.Expect(http.StatusNoContent, "PUT", "/api/v1/users/@me/relationships/"+bob.ID.String(), map[string]any{})
+	bob.Expect(http.StatusNoContent, "PUT", "/api/v1/users/@me/relationships/"+ann.ID.String(), map[string]any{})
+	dm := str(obj(ann.Expect(http.StatusOK, "POST", "/api/v1/users/@me/channels", map[string]any{"recipient_id": bob.ID}))["id"])
+	ann.Expect(http.StatusNoContent, "POST", typing(dm), nil)
+	got = e.Eph.Take()
+	if len(got) != 1 || got[0].Subject != events.EphChannelTopic(uuid.MustParse(dm)) || got[0].Data.(Typing).GuildID != nil {
+		t.Fatalf("DM typing: %+v", got)
+	}
+	// A block makes the DM read-only: no typing either.
+	bob.Expect(http.StatusNoContent, "PUT", "/api/v1/users/@me/relationships/"+ann.ID.String(), map[string]any{"type": 2})
+	ann.Expect(http.StatusForbidden, "POST", typing(dm), nil)
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
+	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
 
@@ -41,6 +42,7 @@ var (
 	ruleRegisterIP = ratelimit.Rule{Name: "register_ip", Limit: 5, Window: time.Hour}
 	ruleRefresh    = ratelimit.Rule{Name: "refresh_session", Limit: 30, Window: time.Minute}
 	ruleTicket     = ratelimit.Rule{Name: "gw_ticket", Limit: 30, Window: time.Minute}
+	ruleStatus     = ratelimit.Rule{Name: "status_change", Limit: 10, Window: time.Minute}
 )
 
 type Service struct {
@@ -161,6 +163,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput, c ClientInfo) 
 		Username:     in.Username,
 		DisplayName:  in.DisplayName,
 		CreatedAt:    now,
+		Status:       string(presence.Online), // the column default
 		passwordHash: hash,
 	}
 	sess, refresh, err := s.newSession(u.ID, now)
@@ -322,6 +325,26 @@ func (s *Service) Authenticate(token string) (Principal, error) {
 		return Principal{}, httpx.ErrUnauthorized
 	}
 	return p, nil
+}
+
+// UpdateMeInput is the body of PATCH /users/@me.
+type UpdateMeInput struct {
+	Status *string `json:"status"`
+}
+
+// UpdateMe changes the caller's own settings; for now the chosen status.
+func (s *Service) UpdateMe(ctx context.Context, p Principal, in UpdateMeInput) (User, error) {
+	if in.Status == nil || !presence.ValidChoice(presence.Status(*in.Status)) {
+		return User{}, httpx.Validation(map[string]string{"status": "Одно из: online, idle, dnd, invisible"})
+	}
+	if err := s.limit(ctx, ruleStatus, p.UserID.String()); err != nil {
+		return User{}, err
+	}
+	u, err := s.store.setStatus(ctx, p.UserID, *in.Status)
+	if errors.Is(err, errNotFound) {
+		return User{}, httpx.ErrUnauthorized
+	}
+	return u, err
 }
 
 // SessionActive reports whether a sign-in session is still valid. The gateway
