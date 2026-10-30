@@ -217,7 +217,9 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	}
 	ws.SetReadLimit(maxInboundBytes)
 	c := newConn(ws, outQueue)
-	go c.writeLoop(context.Background())
+	// The writer outlives request cancellation: on shutdown it still has to
+	// send the close frame. It ends when the connection is kicked.
+	go c.writeLoop(context.WithoutCancel(r.Context()))
 	stop := context.AfterFunc(r.Context(), func() { c.kick(closeRestart, "server restart") })
 	defer stop()
 

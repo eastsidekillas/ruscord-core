@@ -179,7 +179,10 @@ func (h *harness) dial(query string) *wsClient {
 
 func dialURL(t *testing.T, url string) *wsClient {
 	t.Helper()
-	ws, _, err := websocket.Dial(t.Context(), url, nil)
+	ws, resp, err := websocket.Dial(t.Context(), url, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
