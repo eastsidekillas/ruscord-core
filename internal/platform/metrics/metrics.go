@@ -82,7 +82,7 @@ func escape(v string) string {
 }
 
 func header(w io.Writer, name, help, typ string) {
-	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, typ)
+	_, _ = fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, typ)
 }
 
 func number(v float64) string {
@@ -128,7 +128,7 @@ func (c *Counter) write(w io.Writer) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, k := range sortedKeys(c.values) {
-		fmt.Fprintf(w, "%s%s %s\n", c.name, c.labels.format(c.keys[k]), number(c.values[k]))
+		_, _ = fmt.Fprintf(w, "%s%s %s\n", c.name, c.labels.format(c.keys[k]), number(c.values[k]))
 	}
 }
 
@@ -182,11 +182,11 @@ func (h *Histogram) write(w io.Writer) {
 		var cum uint64
 		for i, b := range h.bounds {
 			cum += s.counts[i]
-			fmt.Fprintf(w, "%s_bucket%s %d\n", h.name, h.labels.format(s.values, "le", number(b)), cum)
+			_, _ = fmt.Fprintf(w, "%s_bucket%s %d\n", h.name, h.labels.format(s.values, "le", number(b)), cum)
 		}
-		fmt.Fprintf(w, "%s_bucket%s %d\n", h.name, h.labels.format(s.values, "le", "+Inf"), s.count)
-		fmt.Fprintf(w, "%s_sum%s %s\n", h.name, h.labels.format(s.values), number(s.sum))
-		fmt.Fprintf(w, "%s_count%s %d\n", h.name, h.labels.format(s.values), s.count)
+		_, _ = fmt.Fprintf(w, "%s_bucket%s %d\n", h.name, h.labels.format(s.values, "le", "+Inf"), s.count)
+		_, _ = fmt.Fprintf(w, "%s_sum%s %s\n", h.name, h.labels.format(s.values), number(s.sum))
+		_, _ = fmt.Fprintf(w, "%s_count%s %d\n", h.name, h.labels.format(s.values), s.count)
 	}
 }
 
@@ -211,7 +211,7 @@ func (g *GaugeFunc) write(w io.Writer) {
 		return
 	}
 	header(w, g.name, g.help, "gauge")
-	fmt.Fprintf(w, "%s %s\n", g.name, number(v))
+	_, _ = fmt.Fprintf(w, "%s %s\n", g.name, number(v))
 }
 
 // Runtime registers the Go runtime gauges and the build version.
