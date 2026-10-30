@@ -175,6 +175,6 @@ func run() error {
 		}
 	}
 
-	handler := httpx.Recover(httpx.CheckOrigin(cfg.AllowedOrigins, mux))
+	handler := httpx.Recover(httpx.TrustProxies(cfg.TrustedProxies, httpx.CheckOrigin(cfg.AllowedOrigins, mux)))
 	return httpx.Run(ctx, log, cfg.HTTPAddr, handler, cfg.ShutdownTimeout)
 }
