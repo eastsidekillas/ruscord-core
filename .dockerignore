@@ -1,0 +1,3 @@
+# Build context of deploy/Dockerfile: no local secrets or git history.
+.env
+.git
