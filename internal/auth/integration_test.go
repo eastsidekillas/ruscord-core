@@ -52,7 +52,7 @@ func newEnv(t *testing.T) *env {
 	signer, _ := NewSigner(make([]byte, 32))
 	clk := &clock{t: time.Now().UTC().Truncate(time.Second)}
 	svc, err := NewService(ctx, Deps{
-		PG: pg, Signer: signer, Limiter: ratelimit.New(rdb), Tickets: NewTickets(rdb), Now: clk.Now,
+		PG: pg, Signer: signer, Limiter: ratelimit.New(rdb), Tickets: NewTickets(rdb), Revoked: NewRevocations(rdb), Now: clk.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -407,7 +407,7 @@ func TestRevokeNotifiesGateway(t *testing.T) {
 		return ids
 	}
 	sessionOf := func(c *client) uuid.UUID {
-		p, err := e.svc.Authenticate(c.access)
+		p, err := e.svc.Authenticate(t.Context(), c.access)
 		if err != nil {
 			t.Fatal(err)
 		}

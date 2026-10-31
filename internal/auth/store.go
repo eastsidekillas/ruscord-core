@@ -74,8 +74,36 @@ func (s *store) createUserWithSession(ctx context.Context, u User, sess session,
 	})
 }
 
-func (s *store) createSession(ctx context.Context, sess session, device string, ip netip.Addr) error {
-	return insertSession(ctx, s.pg, sess, device, ip)
+// createSession signs a device in: the new session, SESSION_CREATE to the
+// user's other devices, and the revocation of the least recently used
+// sessions beyond limit. It returns the sessions it revoked.
+func (s *store) createSession(ctx context.Context, sess session, device string, ip netip.Addr, limit int) ([]uuid.UUID, error) {
+	var capped []uuid.UUID
+	err := pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
+		if err := insertSession(ctx, tx, sess, device, ip); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx,
+			`SELECT id FROM sessions WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > $2
+			 ORDER BY last_used_at DESC, id DESC OFFSET $3`, sess.UserID, sess.RotatedAt, limit)
+		if err != nil {
+			return err
+		}
+		if capped, err = pgx.CollectRows(rows, pgx.RowTo[uuid.UUID]); err != nil {
+			return err
+		}
+		for _, id := range capped {
+			if err := revokeSession(ctx, tx, id, "session_limit", sess.RotatedAt); err != nil {
+				return err
+			}
+		}
+		info, err := sessionByID(ctx, tx, sess.ID)
+		if err != nil {
+			return err
+		}
+		return events.Write(ctx, tx, events.Event{Topic: events.UserTopic(sess.UserID), Type: events.SessionCreate, Data: info})
+	})
+	return capped, err
 }
 
 type execer interface {
@@ -136,10 +164,15 @@ func (s *store) withSessionLocked(ctx context.Context, id uuid.UUID, fn func(tx 
 	})
 }
 
-func rotateSession(ctx context.Context, tx pgx.Tx, id uuid.UUID, newHash, prevHash []byte, now, expires time.Time) error {
+func rotateSession(ctx context.Context, tx pgx.Tx, id uuid.UUID, newHash, prevHash []byte, now, expires time.Time, ip netip.Addr) error {
+	var ipArg any
+	if ip.IsValid() {
+		ipArg = ip
+	}
 	_, err := tx.Exec(ctx,
-		`UPDATE sessions SET refresh_hash = $2, prev_refresh_hash = $3, rotated_at = $4, last_used_at = $4, expires_at = $5
-		 WHERE id = $1`, id, newHash, prevHash, now, expires)
+		`UPDATE sessions SET refresh_hash = $2, prev_refresh_hash = $3, rotated_at = $4, last_used_at = $4, expires_at = $5,
+		                     last_ip = COALESCE($6, last_ip)
+		 WHERE id = $1`, id, newHash, prevHash, now, expires, ipArg)
 	return err
 }
 

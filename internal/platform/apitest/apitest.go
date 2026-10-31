@@ -57,7 +57,7 @@ func New(t *testing.T) *Env {
 	blobs := blob.NewMemory()
 	files := blob.NewCollector(pg, blobs, testdb.Logger())
 	authSvc, err := auth.NewService(context.Background(), auth.Deps{
-		PG: pg, Signer: signer, Limiter: limiter, Tickets: auth.NewTickets(rdb), Files: files,
+		PG: pg, Signer: signer, Limiter: limiter, Tickets: auth.NewTickets(rdb), Revoked: auth.NewRevocations(rdb), Files: files,
 	})
 	if err != nil {
 		t.Fatal(err)

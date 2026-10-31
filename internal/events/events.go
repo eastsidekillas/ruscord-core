@@ -50,9 +50,14 @@ const (
 	UserProfileUpdate = "USER_PROFILE_UPDATE"
 
 	// SessionRevoke goes to the user topic when a sign-in session is revoked
-	// (logout, refresh-token reuse). It is internal: the gateway closes the
-	// connections of that session and never forwards it to clients.
+	// (logout, refresh-token reuse, signed out from another device). The
+	// gateway closes the connections of that session and forwards the event
+	// to the user's other sessions, whose device lists drop it.
 	SessionRevoke = "SESSION_REVOKE"
+	// SessionCreate goes to the user topic when a device signs in, with the
+	// session as its owner sees it (auth.SessionInfo): the user's other
+	// devices show "signed in on a new device".
+	SessionCreate = "SESSION_CREATE"
 )
 
 // Topics. Gateway nodes subscribe to the guilds and users of their sessions.

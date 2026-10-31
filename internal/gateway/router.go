@@ -258,9 +258,20 @@ func (r *router) userEvent(ctx context.Context, ev event) (routed, error) {
 		var p struct {
 			SessionID uuid.UUID `json:"session_id"`
 		}
-		if json.Unmarshal(ev.Data, &p) == nil && p.SessionID == r.authSession {
+		if json.Unmarshal(ev.Data, &p) != nil {
+			return routed{}, nil
+		}
+		if p.SessionID == r.authSession {
 			return routed{revoked: true}, nil
 		}
+		return forward(ev), nil // another device of mine signed out
+
+	case events.SessionCreate:
+		var p idPayload
+		if json.Unmarshal(ev.Data, &p) != nil || p.ID == r.authSession {
+			return routed{}, nil
+		}
+		return forward(ev), nil
 	}
 	return routed{}, nil
 }

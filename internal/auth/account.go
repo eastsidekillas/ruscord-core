@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
-	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
 
 // AccountCleanup takes a deleted account out of what another module keeps:
@@ -26,13 +25,8 @@ type AccountCleanup interface {
 // OnAccountDeleted registers the modules that clean up after a deletion.
 func (s *Service) OnAccountDeleted(c ...AccountCleanup) { s.cleanups = append(s.cleanups, c...) }
 
-var (
-	errOwnsGuilds = httpx.NewError(http.StatusBadRequest, "owns_guilds",
-		"Сначала удалите серверы, владельцем которых вы являетесь")
-	errWrongPassword = httpx.NewError(http.StatusForbidden, "wrong_password", "Неверный пароль")
-
-	ruleDeleteAccount = ratelimit.Rule{Name: "delete_account", Limit: 5, Window: time.Hour}
-)
+var errOwnsGuilds = httpx.NewError(http.StatusBadRequest, "owns_guilds",
+	"Сначала удалите серверы, владельцем которых вы являетесь")
 
 // cleanupAgain is how long after a deletion the last cleanup pass runs: by
 // then every access token of the account has expired (accessTTL).
@@ -49,25 +43,8 @@ type DeleteMeInput struct {
 // (docs/adr/0021-bans-account-deletion.md). Leaving guilds, groups and
 // friends follows right after, and the sweeper finishes it if that fails.
 func (s *Service) DeleteMe(ctx context.Context, p Principal, in DeleteMeInput) error {
-	if err := s.limit(ctx, ruleDeleteAccount, p.UserID.String()); err != nil {
+	if _, err := s.checkPassword(ctx, p.UserID, in.Password); err != nil {
 		return err
-	}
-	u, err := s.store.userByID(ctx, p.UserID)
-	if errors.Is(err, errNotFound) {
-		return httpx.ErrUnauthorized
-	}
-	if err != nil {
-		return err
-	}
-	if len(in.Password) > 512 {
-		return errWrongPassword
-	}
-	ok, err := s.hasher.Verify(ctx, in.Password, u.passwordHash)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return errWrongPassword
 	}
 	if s.guilds != nil {
 		n, err := s.guilds.OwnedGuildCount(ctx, p.UserID)
@@ -79,7 +56,8 @@ func (s *Service) DeleteMe(ctx context.Context, p Principal, in DeleteMeInput) e
 		}
 	}
 	now := s.now().UTC()
-	err = pgx.BeginFunc(ctx, s.store.pg, func(tx pgx.Tx) error {
+	var revoked []uuid.UUID
+	err := pgx.BeginFunc(ctx, s.store.pg, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `UPDATE users SET deleted_at = $2 WHERE id = $1 AND deleted_at IS NULL`, p.UserID, now)
 		if err != nil {
 			return err
@@ -102,11 +80,13 @@ func (s *Service) DeleteMe(ctx context.Context, p Principal, in DeleteMeInput) e
 				return err
 			}
 		}
+		revoked = ids
 		return nil
 	})
 	if err != nil {
 		return err
 	}
+	s.markRevoked(ctx, revoked...)
 	// The account is already gone for everyone; a failure here is retried.
 	if err := s.cleanup(ctx, p.UserID); err != nil {
 		slog.WarnContext(ctx, "auth: account cleanup failed, the sweeper will retry", "user", p.UserID, "err", err)
