@@ -54,6 +54,7 @@ type Service struct {
 	signer  *Signer
 	limiter *ratelimit.Limiter
 	tickets *Tickets
+	revoked *Revocations
 	files   *blob.Collector
 	guilds  GuildIDs // for profile fan-out; nil means none
 	// cleanups run after an account is deleted (OnAccountDeleted).
@@ -67,12 +68,16 @@ type Deps struct {
 	Signer  *Signer
 	Limiter *ratelimit.Limiter
 	Tickets *Tickets
+	Revoked *Revocations
 	// Files stores avatars; nil disables avatar uploads (503).
 	Files *blob.Collector
 	Now   func() time.Time // nil means time.Now
 }
 
 func NewService(ctx context.Context, d Deps) (*Service, error) {
+	if d.Revoked == nil {
+		return nil, errors.New("auth: Deps.Revoked is required")
+	}
 	now := d.Now
 	if now == nil {
 		now = time.Now
@@ -83,6 +88,7 @@ func NewService(ctx context.Context, d Deps) (*Service, error) {
 		signer:  d.Signer,
 		limiter: d.Limiter,
 		tickets: d.Tickets,
+		revoked: d.Revoked,
 		files:   d.Files,
 		now:     now,
 	}
@@ -139,18 +145,26 @@ func (in *RegisterInput) normalize() *httpx.Error {
 		fields["username"] = "Нельзя две точки подряд"
 	}
 	fields.Length("display_name", in.DisplayName, 1, 32)
-	switch n := utf8.RuneCountInString(in.Password); {
-	case n < 8:
-		fields["password"] = "Не короче 8 символов"
-	case n > 128:
-		fields["password"] = "Не длиннее 128 символов"
-	case strings.EqualFold(in.Password, in.Email) || strings.EqualFold(in.Password, in.Username):
-		fields["password"] = "Пароль не должен совпадать с email или именем"
+	if msg := passwordProblem(in.Password, in.Email, in.Username); msg != "" {
+		fields["password"] = msg
 	}
 	if len(fields) > 0 {
 		return httpx.Validation(fields)
 	}
 	return nil
+}
+
+// passwordProblem explains why a new password is not acceptable, or is "".
+func passwordProblem(password, email, username string) string {
+	switch n := utf8.RuneCountInString(password); {
+	case n < 8:
+		return "Не короче 8 символов"
+	case n > 128:
+		return "Не длиннее 128 символов"
+	case strings.EqualFold(password, email) || strings.EqualFold(password, username):
+		return "Пароль не должен совпадать с email или именем"
+	}
+	return ""
 }
 
 func (s *Service) limit(ctx context.Context, rule ratelimit.Rule, key string) error {
@@ -237,14 +251,17 @@ func (s *Service) Login(ctx context.Context, in LoginInput, c ClientInfo) (Token
 	if err != nil {
 		return Tokens{}, err
 	}
-	if err := s.store.createSession(ctx, sess, c.Device, parseIP(c.IP)); err != nil {
+	capped, err := s.store.createSession(ctx, sess, c.Device, parseIP(c.IP), maxSessions)
+	if err != nil {
 		return Tokens{}, err
 	}
+	s.markRevoked(ctx, capped...)
 	return s.tokens(u, sess.ID, refresh, now)
 }
 
-// Refresh rotates the refresh token and issues a new access token.
-func (s *Service) Refresh(ctx context.Context, refreshToken string) (Tokens, error) {
+// Refresh rotates the refresh token and issues a new access token. The
+// session remembers the address it was refreshed from.
+func (s *Service) Refresh(ctx context.Context, refreshToken string, c ClientInfo) (Tokens, error) {
 	sid, secret, err := decodeRefresh(refreshToken)
 	if err != nil {
 		return Tokens{}, ErrSessionExpired
@@ -276,7 +293,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (Tokens, err
 		if err != nil {
 			return err
 		}
-		if err := rotateSession(ctx, tx, sess.ID, hashSecret(next), sess.RefreshHash, now, now.Add(refreshTTL)); err != nil {
+		if err := rotateSession(ctx, tx, sess.ID, hashSecret(next), sess.RefreshHash, now, now.Add(refreshTTL), parseIP(c.IP)); err != nil {
 			return err
 		}
 		newRefresh = encodeRefresh(sess.ID, next)
@@ -290,6 +307,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (Tokens, err
 		return Tokens{}, err
 	case reused:
 		slog.WarnContext(ctx, "refresh token reuse detected, session revoked", "session_id", sid)
+		s.markRevoked(ctx, sid)
 		return Tokens{}, ErrSessionExpired
 	}
 
@@ -309,15 +327,20 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	}
 	presented := hashSecret(secret)
 	now := s.now().UTC()
+	revoked := false
 	err = s.store.withSessionLocked(ctx, sid, func(tx pgx.Tx, sess session) error {
 		if subtle.ConstantTimeCompare(presented, sess.RefreshHash) != 1 &&
 			(sess.PrevRefreshHash == nil || subtle.ConstantTimeCompare(presented, sess.PrevRefreshHash) != 1) {
 			return nil
 		}
+		revoked = true
 		return revokeSession(ctx, tx, sess.ID, "logout", now)
 	})
 	if errors.Is(err, errNotFound) {
 		return nil
+	}
+	if err == nil && revoked {
+		s.markRevoked(ctx, sid)
 	}
 	return err
 }
@@ -330,14 +353,31 @@ func (s *Service) Me(ctx context.Context, p Principal) (User, error) {
 	return u, err
 }
 
-// Authenticate verifies an access token. It does not hit the database: a
-// revoked session stays usable until its access token expires (≤10 min).
-func (s *Service) Authenticate(token string) (Principal, error) {
+// Authenticate verifies an access token: its signature and expiry, and that
+// its session has not been revoked meanwhile (Revocations). It does not hit
+// the database.
+func (s *Service) Authenticate(ctx context.Context, token string) (Principal, error) {
 	p, err := s.signer.Verify(token, s.now())
 	if err != nil {
 		return Principal{}, httpx.ErrUnauthorized
 	}
+	revoked, err := s.revoked.Revoked(ctx, p.SessionID)
+	if err != nil {
+		return Principal{}, err
+	}
+	if revoked {
+		return Principal{}, httpx.ErrUnauthorized
+	}
 	return p, nil
+}
+
+// markRevoked lists committed revocations in Valkey. The revocation already
+// stands in the database (refresh fails, the gateway closes); if Valkey
+// fails here, the session's access token keeps working until it expires.
+func (s *Service) markRevoked(ctx context.Context, ids ...uuid.UUID) {
+	if err := s.revoked.Mark(ctx, ids...); err != nil {
+		slog.ErrorContext(ctx, "auth: revoked sessions not listed; their access tokens work until they expire", "sessions", ids, "err", err)
+	}
 }
 
 // SessionActive reports whether a sign-in session is still valid. The gateway

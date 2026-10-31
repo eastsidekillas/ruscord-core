@@ -199,7 +199,11 @@ func TestRoute(t *testing.T) {
 
 		// sessions and junk
 		{name: "my session revoked", in: ev(ut, events.SessionRevoke, map[string]any{"session_id": f.authSID}), revoked: true},
-		{name: "another session of mine revoked", in: ev(ut, events.SessionRevoke, map[string]any{"session_id": uuid.New()})},
+		{name: "another session of mine revoked", in: ev(ut, events.SessionRevoke, map[string]any{"session_id": uuid.New()}), want: []string{events.SessionRevoke + ":-"}},
+		{name: "malformed revoke", in: event{Subject: ut, Type: events.SessionRevoke, Data: json.RawMessage(`{"session_id": 5}`)}},
+		{name: "signed in on another device", in: ev(ut, events.SessionCreate, map[string]any{"id": f.other}), want: []string{events.SessionCreate + ":" + f.other.String()}},
+		{name: "my own sign-in", in: ev(ut, events.SessionCreate, map[string]any{"id": f.authSID})},
+		{name: "malformed sign-in", in: event{Subject: ut, Type: events.SessionCreate, Data: json.RawMessage(`{"id": 5}`)}},
 		{name: "another user's topic", in: ev(events.UserTopic(f.other), events.RelationshipAdd, map[string]any{"id": f.me})},
 		{name: "unknown event type", in: ev(ut, "SOMETHING_NEW", map[string]any{"id": f.me})},
 		{name: "unknown guild event type", in: ev(gt, "SOMETHING_NEW", map[string]any{"id": f.me})},

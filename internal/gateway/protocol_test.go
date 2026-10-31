@@ -320,7 +320,10 @@ func TestRevokedSessionIsClosed(t *testing.T) {
 	other, _ := h.connect(auth.Principal{UserID: p.UserID, SessionID: uuid.New()})
 	h.publish(events.UserTopic(p.UserID), events.SessionRevoke, map[string]any{"session_id": p.SessionID})
 	c.expectClose(closeAuthFailed)
-	// The other device of the same user stays connected.
+	// The other device of the same user stays connected and hears of it.
+	if f := other.expectDispatch(events.SessionRevoke); !bytes.Contains(f.D, []byte(p.SessionID.String())) {
+		t.Fatalf("SESSION_REVOKE payload %s", f.D)
+	}
 	h.publish(events.UserTopic(p.UserID), events.RelationshipAdd, map[string]any{"id": uuid.New(), "type": 3})
 	other.expectDispatch(events.RelationshipAdd)
 }

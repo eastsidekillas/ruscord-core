@@ -152,6 +152,7 @@ func run() error {
 			Signer:  signer,
 			Limiter: limiter,
 			Tickets: auth.NewTickets(clients.Redis),
+			Revoked: auth.NewRevocations(clients.Redis),
 			Files:   files,
 		})
 		if err != nil {

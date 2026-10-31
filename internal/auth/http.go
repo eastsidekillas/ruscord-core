@@ -40,6 +40,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("PUT /api/v1/users/@me/avatar", h.RequireAuth(httpx.Handle(h.setAvatar)))
 	mux.Handle("DELETE /api/v1/users/@me/avatar", h.RequireAuth(httpx.Handle(h.deleteAvatar)))
 	mux.Handle("POST /api/v1/gateway/ticket", h.RequireAuth(httpx.Handle(h.ticket)))
+	mux.Handle("GET /api/v1/users/@me/sessions", h.RequireAuth(httpx.Handle(h.sessions)))
+	mux.Handle("DELETE /api/v1/users/@me/sessions/{session}", h.RequireAuth(httpx.Handle(h.revokeSession)))
+	mux.Handle("POST /api/v1/users/@me/sessions/revoke-others", h.RequireAuth(httpx.Handle(h.revokeOthers)))
+	mux.Handle("POST /api/v1/users/@me/password", h.RequireAuth(httpx.Handle(h.changePassword)))
 }
 
 // maxDevice matches the sessions.device CHECK (characters, not bytes).
@@ -90,7 +94,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) error {
 		h.clearCookies(w)
 		return ErrSessionExpired
 	}
-	t, err := h.svc.Refresh(r.Context(), c.Value)
+	t, err := h.svc.Refresh(r.Context(), c.Value, clientInfo(r))
 	if err != nil {
 		if err == ErrSessionExpired { //nolint:errorlint // sentinel returned as-is
 			h.clearCookies(w)
@@ -179,6 +183,54 @@ func (h *Handler) ticket(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+func (h *Handler) sessions(w http.ResponseWriter, r *http.Request) error {
+	list, err := h.svc.Sessions(r.Context(), PrincipalFrom(r.Context()))
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, list)
+	return nil
+}
+
+// revokeSession signs a device out; signing out the current one clears its
+// cookies like a logout.
+func (h *Handler) revokeSession(w http.ResponseWriter, r *http.Request) error {
+	id, err := httpx.PathUUID(r, "session")
+	if err != nil {
+		return err
+	}
+	p := PrincipalFrom(r.Context())
+	if err := h.svc.RevokeSession(r.Context(), p, id); err != nil {
+		return err
+	}
+	if id == p.SessionID {
+		h.clearCookies(w)
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (h *Handler) revokeOthers(w http.ResponseWriter, r *http.Request) error {
+	var in PasswordInput
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		return err
+	}
+	n, err := h.svc.RevokeOtherSessions(r.Context(), PrincipalFrom(r.Context()), in)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]int{"revoked": n})
+	return nil
+}
+
+func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) error {
+	var in ChangePasswordInput
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		return err
+	}
+	return httpx.NoContent(w, h.svc.ChangePassword(r.Context(), PrincipalFrom(r.Context()), in))
+}
+
 // Secure is off only in dev (plain http on localhost); see NewHandler.
 func (h *Handler) setCookies(w http.ResponseWriter, t Tokens) {
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure is configurable, HttpOnly and SameSite are set
@@ -211,7 +263,7 @@ func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 			httpx.WriteError(w, r, httpx.ErrUnauthorized)
 			return
 		}
-		p, err := h.svc.Authenticate(c.Value)
+		p, err := h.svc.Authenticate(r.Context(), c.Value)
 		if err != nil {
 			httpx.WriteError(w, r, err)
 			return
