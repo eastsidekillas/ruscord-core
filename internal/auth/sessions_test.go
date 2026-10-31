@@ -230,7 +230,7 @@ func TestSessionLimit(t *testing.T) {
 	// The registration's session is used now; fill up with older ones.
 	_, err = e.pg.Exec(t.Context(),
 		`INSERT INTO sessions (id, user_id, refresh_hash, rotated_at, last_used_at, expires_at)
-		 SELECT gen_random_uuid(), $1, '\x00', $2, $2 - make_interval(mins => g), $2 + interval '1 day'
+		 SELECT gen_random_uuid(), $1, '\x00', $2::timestamptz, $2::timestamptz - make_interval(mins => g), $2::timestamptz + interval '1 day'
 		 FROM generate_series(1, $3) g`, uid, e.clock.Now(), maxSessions-1)
 	if err != nil {
 		t.Fatal(err)
