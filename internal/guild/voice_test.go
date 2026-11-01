@@ -86,8 +86,12 @@ func TestVoiceStates(t *testing.T) {
 	if ok, old, err := e.svc.VoiceJoined(ctx, bob.ID, vc, "PA_1"); !ok || old != nil || err != nil {
 		t.Fatalf("join: %v %v %v", ok, old, err)
 	}
-	if st := statesIn(gid); len(st) != 1 || obj(st[0])["channel_id"] != voice || obj(st[0])["user_id"] != bob.ID.String() {
-		t.Fatalf("voice_states = %v", st)
+	if st := statesIn(gid); len(st) != 1 || obj(st[0])["channel_id"] != voice || obj(st[0])["user_id"] != bob.ID.String() ||
+		obj(obj(st[0])["user"])["username"] != "bob" {
+		t.Fatalf("voice_states = %v (with the profile)", st)
+	}
+	if ev := e.Outbox("VOICE_STATE_UPDATE"); obj(ev[0].Data["user"])["username"] != "bob" {
+		t.Fatalf("VOICE_STATE_UPDATE without the profile: %v", ev[0].Data)
 	}
 	// LiveKit repeats a webhook: nothing new happens.
 	if ok, _, _ := e.svc.VoiceJoined(ctx, bob.ID, vc, "PA_1"); !ok || events() != 1 {

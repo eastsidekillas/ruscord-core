@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/eastsidekillas/ruscord-core/internal/auth"
 	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
@@ -21,6 +22,9 @@ type VoiceState struct {
 	ChannelID *uuid.UUID `json:"channel_id"`
 	SelfMute  bool       `json:"self_mute"`
 	SelfDeaf  bool       `json:"self_deaf"`
+	// User is the public profile (auth.PublicUser) of someone in a channel;
+	// absent when they left.
+	User any `json:"user,omitempty"`
 
 	participant string // LiveKit participant sid
 }
@@ -149,7 +153,7 @@ func (s *Service) voiceJoined(ctx context.Context, userID, channelID uuid.UUID, 
 			return err
 		}
 		st.UserID, st.GuildID, st.ChannelID = userID, ch.GuildID, &channelID
-		return writeVoiceState(ctx, tx, st)
+		return s.writeVoiceState(ctx, tx, st)
 	})
 	if errors.Is(err, httpx.ErrNotFound) {
 		return false, nil, nil, nil // no such guild or member any more
@@ -176,7 +180,7 @@ func (s *Service) VoiceLeft(ctx context.Context, userID, channelID uuid.UUID, pa
 			return err
 		}
 		cleared = true
-		return writeVoiceState(ctx, tx, VoiceState{UserID: userID, GuildID: ch.GuildID})
+		return s.writeVoiceState(ctx, tx, VoiceState{UserID: userID, GuildID: ch.GuildID})
 	})
 	return cleared, err
 }
@@ -200,7 +204,7 @@ func (s *Service) SetSelfVoice(ctx context.Context, userID, channelID uuid.UUID,
 			return err
 		}
 		st.UserID, st.GuildID, st.ChannelID = userID, ch.GuildID, &channelID
-		return writeVoiceState(ctx, tx, st)
+		return s.writeVoiceState(ctx, tx, st)
 	})
 	return st, err
 }
@@ -231,8 +235,35 @@ func (s *Service) VoiceRooms(ctx context.Context) (map[uuid.UUID][]VoiceParticip
 	return out, rows.Err()
 }
 
-func writeVoiceState(ctx context.Context, tx pgx.Tx, st VoiceState) error {
+// writeVoiceState sends a VOICE_STATE_UPDATE; someone in a channel comes
+// with their profile, so clients can show them.
+func (s *Service) writeVoiceState(ctx context.Context, tx pgx.Tx, st VoiceState) error {
+	if st.ChannelID != nil {
+		if err := s.attachVoiceUsers(ctx, []*VoiceState{&st}); err != nil {
+			return err
+		}
+	}
 	return events.Write(ctx, tx, events.Event{Topic: events.GuildTopic(st.GuildID), Type: events.VoiceStateUpdate, Data: st})
+}
+
+func (s *Service) attachVoiceUsers(ctx context.Context, sts []*VoiceState) error {
+	return auth.Attach(ctx, s.users, sts, func(st *VoiceState) *uuid.UUID { return &st.UserID },
+		func(st *VoiceState, u auth.PublicUser) { st.User = u })
+}
+
+// voiceStates loads the voice states of guilds with the users' profiles.
+func (s *Service) voiceStates(ctx context.Context, q querier, guildIDs []uuid.UUID) (map[uuid.UUID][]VoiceState, error) {
+	byGuild, err := voiceStatesIn(ctx, q, guildIDs)
+	if err != nil {
+		return nil, err
+	}
+	var all []*VoiceState
+	for _, sts := range byGuild {
+		for i := range sts {
+			all = append(all, &sts[i])
+		}
+	}
+	return byGuild, s.attachVoiceUsers(ctx, all)
 }
 
 func voiceStatesIn(ctx context.Context, q querier, guildIDs []uuid.UUID) (map[uuid.UUID][]VoiceState, error) {

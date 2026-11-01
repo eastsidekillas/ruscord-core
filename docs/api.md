@@ -304,7 +304,8 @@ nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
 LiveKit отклоняет остальное. `push_to_talk` — у пользователя нет
 `USE_VOICE_ACTIVITY`. 20 входов в минуту.
 
-Голосовое состояние: `{user_id, guild_id, channel_id, self_mute, self_deaf}`.
+Голосовое состояние: `{user_id, guild_id, channel_id, self_mute, self_deaf, user}`,
+`user` — публичный профиль (нет у «вышел»).
 - Человек «в канале», когда LiveKit сообщил о подключении, а не сразу после
   выдачи токена.
 - Голосовой канал один на пользователя: вход в другой выводит из прежнего.
