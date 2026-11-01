@@ -185,7 +185,7 @@ func (s *Service) full(ctx context.Context, q querier, guildID, userID uuid.UUID
 	if err != nil {
 		return Full{}, err
 	}
-	voice, err := voiceStatesIn(ctx, q, []uuid.UUID{guildID})
+	voice, err := s.voiceStates(ctx, q, []uuid.UUID{guildID})
 	if err != nil {
 		return Full{}, err
 	}

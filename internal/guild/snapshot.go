@@ -129,7 +129,7 @@ func (s *Service) snapshots(ctx context.Context, userID uuid.UUID, only *uuid.UU
 		if err != nil {
 			return err
 		}
-		voice, err := voiceStatesIn(ctx, tx, ids)
+		voice, err := s.voiceStates(ctx, tx, ids)
 		if err != nil {
 			return err
 		}
