@@ -90,6 +90,8 @@ type Full struct {
 	// Channels, computed by internal/perm, so clients never reimplement the
 	// rules (docs/adr/0017-client-permissions.md).
 	ChannelPermissions map[uuid.UUID]perm.Permissions `json:"channel_permissions"`
+	// VoiceStates says who is in the voice channels of Channels.
+	VoiceStates []VoiceState `json:"voice_states"`
 }
 
 func (o Overwrite) perm() perm.Overwrite {

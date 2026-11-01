@@ -48,6 +48,9 @@ type Config struct {
 	LiveKitURL       string
 	LiveKitAPIKey    string
 	LiveKitAPISecret string
+	// LiveKitPublicURL is the LiveKit address browsers connect to; empty
+	// means the client's own origin under /livekit (its nginx proxies it).
+	LiveKitPublicURL string
 
 	// JWTSeed is the Ed25519 seed for access tokens. Empty in dev means an
 	// ephemeral key: every restart signs everyone out, which is fine locally.
@@ -104,6 +107,7 @@ func load(getenv func(string) string) (Config, error) {
 		MetricsAddr:      get("RUSCORD_METRICS_ADDR", "127.0.0.1:9090"),
 		LiveKitAPIKey:    get("RUSCORD_LIVEKIT_API_KEY", ""),
 		LiveKitAPISecret: get("RUSCORD_LIVEKIT_API_SECRET", ""),
+		LiveKitPublicURL: get("RUSCORD_LIVEKIT_PUBLIC_URL", ""),
 	}
 
 	var errs []error
