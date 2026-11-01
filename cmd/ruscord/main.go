@@ -174,6 +174,7 @@ func run() error {
 		socials.OnChannelsDeleted(message.DeleteChannels)
 		lk := voice.NewLiveKit(cfg.LiveKitURL, cfg.LiveKitAPIKey, cfg.LiveKitAPISecret)
 		voices := voice.NewService(lk, guilds, svc, limiter, cfg.LiveKitPublicURL, log)
+		guilds.WithVoice(voices)
 
 		if cfg.Has(config.RoleAPI) {
 			authHTTP := auth.NewHandler(svc, !cfg.IsDev())

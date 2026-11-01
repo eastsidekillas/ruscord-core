@@ -38,6 +38,7 @@ func newEnv(t *testing.T) *env {
 	svc := NewService(lk, guilds, e.Auth, e.Limiter, "", testdb.Logger())
 	svc.Register(e.Mux, e.RequireAuth)
 	svc.RegisterWebhook(e.Mux, lk)
+	guilds.WithVoice(svc)
 	return &env{Env: e, guilds: guilds, svc: svc, lk: lk, rooms: f}
 }
 

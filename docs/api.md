@@ -295,7 +295,9 @@ nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
 | Метод и путь | Тело | Ответ | Ошибки |
 |---|---|---|---|
 | `POST /channels/{id}/voice` | — | 200, `{url, token, room, sources, push_to_talk}` | 400 `not_voice_channel`, 403 (нет `CONNECT`), 404, 409 `channel_full`, 429 |
-| `PATCH /channels/{id}/voice` | `{self_mute, self_deaf}` | 200, голосовое состояние | 404, 409 `not_in_voice` |
+| `PATCH /channels/{id}/voice` | `{self_mute, self_deaf}` | 200, голосовое состояние | 404, 409 `not_in_voice`, 429 |
+| `PATCH /guilds/{id}/voice-states/{user}` | `{mute?, deaf?}` | 200, голосовое состояние | 403 (нет `MUTE_MEMBERS` / `DEAFEN_MEMBERS` в канале цели), 404 `not_in_voice`, 422, 429 |
+| `DELETE /guilds/{id}/voice-states/{user}` | — | 204 | 403 (нет `MOVE_MEMBERS`), 404 `not_in_voice`, 429 |
 
 Вход выдаёт токен LiveKit на 60 с. С ним клиент подключается к LiveKit:
 `url` — его адрес, пустой `url` значит свой адрес под `/livekit` (nginx
@@ -304,15 +306,21 @@ nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
 LiveKit отклоняет остальное. `push_to_talk` — у пользователя нет
 `USE_VOICE_ACTIVITY`. 20 входов в минуту.
 
-Голосовое состояние: `{user_id, guild_id, channel_id, self_mute, self_deaf, user}`,
-`user` — публичный профиль (нет у «вышел»).
+Голосовое состояние: `{user_id, guild_id, channel_id, self_mute, self_deaf, mute, deaf, user}`,
+`user` — публичный профиль (нет у «вышел»). `mute` и `deaf` поставил
+модератор (ADR-0026): у такого участника нет микрофона или входящего звука,
+и выход с новым входом этого не снимает.
 - Человек «в канале», когда LiveKit сообщил о подключении, а не сразу после
   выдачи токена.
 - Голосовой канал один на пользователя: вход в другой выводит из прежнего.
 - В объекте сервера (`GET /guilds/{id}`, `GUILD_CREATE`, READY) есть
   `voice_states` — только по видимым вам каналам.
 - Кому нельзя быть в комнате (не участник, нет `CONNECT`), сервер выводит
-  из неё.
+  из неё — сразу после кика, бана или смены прав.
+- Потеря `SPEAK`, `VIDEO` или `STREAM` действует сразу: LiveKit снимает
+  лишние треки.
+- Удаление голосового канала или сервера закрывает комнату.
+- Свой mute и deafen — 30 в минуту, действия модератора — 60 в минуту.
 
 ## Gateway (WebSocket)
 

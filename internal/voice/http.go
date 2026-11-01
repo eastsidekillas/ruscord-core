@@ -4,7 +4,10 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
+	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 )
 
@@ -12,6 +15,41 @@ import (
 func (s *Service) Register(mux *http.ServeMux, requireAuth func(http.Handler) http.Handler) {
 	mux.Handle("POST /api/v1/channels/{channel}/voice", requireAuth(httpx.Handle(s.join)))
 	mux.Handle("PATCH /api/v1/channels/{channel}/voice", requireAuth(httpx.Handle(s.selfVoice)))
+	mux.Handle("PATCH /api/v1/guilds/{guild}/voice-states/{user}", requireAuth(httpx.Handle(s.serverVoice)))
+	mux.Handle("DELETE /api/v1/guilds/{guild}/voice-states/{user}", requireAuth(httpx.Handle(s.disconnect)))
+}
+
+func guildAndUser(r *http.Request) (guildID, userID uuid.UUID, err error) {
+	if guildID, err = httpx.PathUUID(r, "guild"); err != nil {
+		return
+	}
+	userID, err = httpx.PathUUID(r, "user")
+	return
+}
+
+func (s *Service) serverVoice(w http.ResponseWriter, r *http.Request) error {
+	g, u, err := guildAndUser(r)
+	if err != nil {
+		return err
+	}
+	var in guild.ServerVoiceInput
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		return err
+	}
+	st, err := s.ServerVoice(r.Context(), auth.UserID(r), g, u, in)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, st)
+	return nil
+}
+
+func (s *Service) disconnect(w http.ResponseWriter, r *http.Request) error {
+	g, u, err := guildAndUser(r)
+	if err != nil {
+		return err
+	}
+	return httpx.NoContent(w, s.Disconnect(r.Context(), auth.UserID(r), g, u))
 }
 
 // WebhookPath is where LiveKit posts its webhooks. It is outside /api, so

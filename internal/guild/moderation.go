@@ -50,7 +50,7 @@ func (s *Service) BanMember(ctx context.Context, userID, guildID, targetID uuid.
 	if targetID == userID {
 		return errBanSelf
 	}
-	return s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
+	return s.mutateVoice(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
 		if !a.base().Has(perm.BanMembers) {
 			return httpx.ErrForbidden
 		}

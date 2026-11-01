@@ -56,6 +56,7 @@ type Service struct {
 
 	channelsDeleted hooks.ChannelsDeleted
 	presences       Presences
+	voice           VoiceEnforcer   // nil: voice rooms are not touched
 	files           *blob.Collector // icons; nil disables uploads
 }
 
@@ -264,11 +265,19 @@ func (s *Service) Update(ctx context.Context, userID, guildID uuid.UUID, in Upda
 
 // Delete removes the guild. Only the owner may do it.
 func (s *Service) Delete(ctx context.Context, userID, guildID uuid.UUID) error {
-	return s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
+	var voiceRooms []uuid.UUID
+	err := s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
 		if a.guild.OwnerID != userID {
 			return httpx.ErrForbidden
 		}
-		rows, err := tx.Query(ctx, `SELECT id FROM channels WHERE guild_id = $1`, guildID)
+		rows, err := tx.Query(ctx, `SELECT id FROM channels WHERE guild_id = $1 AND type = $2`, guildID, ChannelVoice)
+		if err != nil {
+			return err
+		}
+		if voiceRooms, err = pgx.CollectRows(rows, pgx.RowTo[uuid.UUID]); err != nil {
+			return err
+		}
+		rows, err = tx.Query(ctx, `SELECT id FROM channels WHERE guild_id = $1`, guildID)
 		if err != nil {
 			return err
 		}
@@ -291,6 +300,10 @@ func (s *Service) Delete(ctx context.Context, userID, guildID uuid.UUID) error {
 			Topic: events.GuildTopic(guildID), Type: events.GuildDelete, Data: map[string]any{"id": guildID},
 		})
 	})
+	if err == nil {
+		s.closeVoiceRooms(ctx, voiceRooms)
+	}
+	return err
 }
 
 // ---- channels ----
@@ -478,9 +491,13 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID
 }
 
 func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID) error {
-	return s.withChannel(ctx, userID, channelID, func(tx pgx.Tx, _ access, ch Channel, p perm.Permissions) error {
+	var voiceRoom []uuid.UUID
+	err := s.withChannel(ctx, userID, channelID, func(tx pgx.Tx, _ access, ch Channel, p perm.Permissions) error {
 		if !p.Has(perm.ManageChannels) {
 			return httpx.ErrForbidden
+		}
+		if ch.Type == ChannelVoice {
+			voiceRoom = []uuid.UUID{ch.ID}
 		}
 		if err := s.channelsDeleted.Run(ctx, tx, []uuid.UUID{ch.ID}); err != nil {
 			return err
@@ -515,6 +532,11 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 		}
 		return events.Write(ctx, tx, evs...)
 	})
+	if err == nil {
+		// Its states went with the channel; whoever is still in the room goes too.
+		s.closeVoiceRooms(ctx, voiceRoom)
+	}
+	return err
 }
 
 // ChannelPermissions returns the guild of a channel and the user's
@@ -571,7 +593,7 @@ func (s *Service) PutOverwrite(ctx context.Context, userID, channelID, targetID 
 		return Channel{}, err
 	}
 	var out Channel
-	err := s.withChannel(ctx, userID, channelID, func(tx pgx.Tx, a access, ch Channel, p perm.Permissions) error {
+	err := s.withChannelVoice(ctx, userID, channelID, func(tx pgx.Tx, a access, ch Channel, p perm.Permissions) error {
 		if !p.Has(perm.ManageRoles) || !p.Has(in.Allow|in.Deny) {
 			return httpx.ErrForbidden
 		}
@@ -612,7 +634,7 @@ func (s *Service) PutOverwrite(ctx context.Context, userID, channelID, targetID 
 
 // DeleteOverwrite removes every overwrite for targetID in the channel.
 func (s *Service) DeleteOverwrite(ctx context.Context, userID, channelID, targetID uuid.UUID) error {
-	return s.withChannel(ctx, userID, channelID, func(tx pgx.Tx, _ access, ch Channel, p perm.Permissions) error {
+	return s.withChannelVoice(ctx, userID, channelID, func(tx pgx.Tx, _ access, ch Channel, p perm.Permissions) error {
 		if !p.Has(perm.ManageRoles) {
 			return httpx.ErrForbidden
 		}
@@ -739,7 +761,7 @@ func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID uuid.U
 		return Role{}, err
 	}
 	var out Role
-	err := s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
+	err := s.mutateVoice(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
 		r, ok := a.role(roleID)
 		if !ok {
 			return httpx.ErrNotFound
@@ -834,7 +856,7 @@ func moveRole(ctx context.Context, tx pgx.Tx, guildID uuid.UUID, from, to int) e
 }
 
 func (s *Service) DeleteRole(ctx context.Context, userID, guildID, roleID uuid.UUID) error {
-	return s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
+	return s.mutateVoice(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
 		r, ok := a.role(roleID)
 		if !ok {
 			return httpx.ErrNotFound
@@ -981,7 +1003,7 @@ func (s *Service) SmallGuilds(ctx context.Context, user uuid.UUID, max int) ([]u
 // assign the role and must outrank the target, unless the target is the
 // caller themself.
 func (s *Service) SetMemberRole(ctx context.Context, userID, guildID, targetID, roleID uuid.UUID, add bool) error {
-	return s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
+	return s.mutateVoice(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
 		r, ok := a.role(roleID)
 		if !ok {
 			return httpx.ErrNotFound
@@ -1025,7 +1047,7 @@ func (s *Service) writeMemberUpdate(ctx context.Context, tx pgx.Tx, guildID, use
 
 // RemoveMember kicks targetID, or leaves the guild when targetID is the caller.
 func (s *Service) RemoveMember(ctx context.Context, userID, guildID, targetID uuid.UUID) error {
-	return s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
+	return s.mutateVoice(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
 		if targetID == userID {
 			if a.guild.OwnerID == userID {
 				return errOwnerCannotGo

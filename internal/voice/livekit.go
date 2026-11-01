@@ -41,6 +41,7 @@ type videoGrant struct {
 	RoomJoin             bool     `json:"roomJoin,omitempty"`
 	RoomAdmin            bool     `json:"roomAdmin,omitempty"`
 	RoomList             bool     `json:"roomList,omitempty"`
+	RoomCreate           bool     `json:"roomCreate,omitempty"`
 	Room                 string   `json:"room,omitempty"`
 	CanPublish           *bool    `json:"canPublish,omitempty"`
 	CanPublishData       *bool    `json:"canPublishData,omitempty"`
@@ -66,14 +67,16 @@ type Join struct {
 	// Sources the participant may publish (microphone, camera,
 	// screen_share, screen_share_audio); none means listen only.
 	Sources []string
-	TTL     time.Duration
+	// Deaf: deafened by a moderator, receives nothing.
+	Deaf bool
+	TTL  time.Duration
 }
 
 // JoinToken is an access token for one room. Clients never get roomAdmin
 // and cannot change their own name or metadata (docs/adr/0025-voice.md).
 func (l *LiveKit) JoinToken(j Join) (string, error) {
-	yes, no := true, false
-	g := &videoGrant{RoomJoin: true, Room: j.Room, CanSubscribe: &yes, CanPublishData: &no, CanUpdateOwnMetadata: &no}
+	no, subscribe := false, !j.Deaf
+	g := &videoGrant{RoomJoin: true, Room: j.Room, CanSubscribe: &subscribe, CanPublishData: &no, CanUpdateOwnMetadata: &no}
 	publish := len(j.Sources) > 0
 	g.CanPublish = &publish
 	if publish {
@@ -99,8 +102,18 @@ func (l *LiveKit) sign(c claims, subject string, ttl time.Duration) (string, err
 
 // Participant is what RoomService reports about someone in a room.
 type Participant struct {
-	Sid      string `json:"sid"`
-	Identity string `json:"identity"`
+	Sid        string      `json:"sid"`
+	Identity   string      `json:"identity"`
+	Permission *Permission `json:"permission,omitempty"`
+}
+
+// Permission is the part of LiveKit's ParticipantPermission the core sets.
+// Sources are TrackSource names: MICROPHONE, CAMERA, SCREEN_SHARE,
+// SCREEN_SHARE_AUDIO.
+type Permission struct {
+	CanSubscribe      bool     `json:"canSubscribe"`
+	CanPublish        bool     `json:"canPublish"`
+	CanPublishSources []string `json:"canPublishSources"`
 }
 
 // ErrNotFound: no such room or participant.
@@ -134,6 +147,31 @@ func (l *LiveKit) ListRooms(ctx context.Context) ([]string, error) {
 		names[i] = r.Name
 	}
 	return names, nil
+}
+
+// SetPermission replaces what a participant may do in a room. LiveKit
+// replaces the whole permission and unpublishes tracks of sources no longer
+// allowed (livekit/pkg/rtc/participant.go SetPermission), so a muted
+// microphone cannot be switched back on by the client.
+func (l *LiveKit) SetPermission(ctx context.Context, room, identity string, p Permission) error {
+	perm := map[string]any{
+		"canSubscribe":      p.CanSubscribe,
+		"canPublish":        p.CanPublish,
+		"canPublishData":    false,
+		"canPublishSources": p.CanPublishSources,
+		"canUpdateMetadata": false,
+	}
+	return l.call(ctx, "UpdateParticipant", map[string]any{"room": room, "identity": identity, "permission": perm}, nil, admin(room))
+}
+
+// DeleteRoom closes a room and disconnects everyone in it; a room that is
+// not there is not an error.
+func (l *LiveKit) DeleteRoom(ctx context.Context, room string) error {
+	err := l.call(ctx, "DeleteRoom", map[string]string{"room": room}, nil, &videoGrant{RoomCreate: true})
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 // RemoveParticipant disconnects identity from room; someone who is not
