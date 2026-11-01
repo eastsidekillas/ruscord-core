@@ -155,7 +155,7 @@ perm = (perm &^ ow[member].deny)    | ow[member].allow
 
 ## LiveKit в проде (на будущее, для staging)
 
-Отличия от `deploy/livekit.dev.yaml`: host network, публичный IP
+Отличия от dev-конфига (`LIVEKIT_CONFIG` в `deploy/docker-compose.yml`): host network, публичный IP
 (`use_external_ip: true`), встроенный TURN на 443/TLS и 3478/UDP с отдельным
 доменом, Redis/Valkey для мультинода, вебхуки на `voice` с проверкой подписи,
 ключи из секретов, закреплённая версия образа, поднятые UDP-буферы ядра

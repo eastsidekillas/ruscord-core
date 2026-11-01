@@ -21,6 +21,9 @@ type Snapshot struct {
 	Roles    []Role
 	Channels []Channel
 	Member   Member
+	// VoiceStates says who is in the guild's voice channels, hidden ones
+	// included (docs/adr/0025-voice.md).
+	VoiceStates []VoiceState
 	// Cursor is the id of the newest outbox event of the guild's topic that
 	// the snapshot already contains. Every state change of a guild is written
 	// under its lock, so ids up to Cursor are exactly the changes the
@@ -58,9 +61,15 @@ func (s Snapshot) Full(v View) Full {
 			visible = append(visible, ch)
 		}
 	}
+	voice := make([]VoiceState, 0, len(s.VoiceStates))
+	for _, st := range s.VoiceStates {
+		if _, ok := v.Channels[*st.ChannelID]; ok {
+			voice = append(voice, st)
+		}
+	}
 	m := s.Member
 	return Full{Guild: s.Guild, Roles: s.Roles, Channels: visible, Member: &m, Permissions: v.Base,
-		ChannelPermissions: maps.Clone(v.Channels)}
+		ChannelPermissions: maps.Clone(v.Channels), VoiceStates: voice}
 }
 
 // Equal reports whether two views grant the same permissions everywhere.
@@ -120,6 +129,10 @@ func (s *Service) snapshots(ctx context.Context, userID uuid.UUID, only *uuid.UU
 		if err != nil {
 			return err
 		}
+		voice, err := voiceStatesIn(ctx, tx, ids)
+		if err != nil {
+			return err
+		}
 		topics := make([]string, len(ids))
 		for i, id := range ids {
 			topics[i] = events.GuildTopic(id)
@@ -131,7 +144,7 @@ func (s *Service) snapshots(ctx context.Context, userID uuid.UUID, only *uuid.UU
 		out = make([]Snapshot, 0, len(members))
 		for _, m := range members {
 			out = append(out, Snapshot{Guild: guilds[m.GuildID], Roles: roles[m.GuildID], Channels: channels[m.GuildID],
-				Member: m, Cursor: cursors[events.GuildTopic(m.GuildID)]})
+				Member: m, VoiceStates: voice[m.GuildID], Cursor: cursors[events.GuildTopic(m.GuildID)]})
 		}
 		return nil
 	})

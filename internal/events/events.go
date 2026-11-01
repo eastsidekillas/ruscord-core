@@ -49,6 +49,12 @@ const (
 	// cursor to it (docs/adr/0019-files.md).
 	UserProfileUpdate = "USER_PROFILE_UPDATE"
 
+	// VoiceStateUpdate goes to a guild's topic when someone enters, leaves or
+	// mutes themself in its voice channel (guild.VoiceState; a null
+	// channel_id means left). Written under the guild lock, like the rest
+	// of the guild's state (docs/adr/0025-voice.md).
+	VoiceStateUpdate = "VOICE_STATE_UPDATE"
+
 	// SessionRevoke goes to the user topic when a sign-in session is revoked
 	// (logout, refresh-token reuse, signed out from another device). The
 	// gateway closes the connections of that session and forwards the event

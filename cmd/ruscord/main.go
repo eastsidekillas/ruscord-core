@@ -37,6 +37,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 	"github.com/eastsidekillas/ruscord-core/internal/social"
+	"github.com/eastsidekillas/ruscord-core/internal/voice"
 )
 
 // version is set at build time: -ldflags "-X main.version=..."
@@ -171,6 +172,8 @@ func run() error {
 		guilds.WithPresences(pres)
 		guilds.OnChannelsDeleted(message.DeleteChannels)
 		socials.OnChannelsDeleted(message.DeleteChannels)
+		lk := voice.NewLiveKit(cfg.LiveKitURL, cfg.LiveKitAPIKey, cfg.LiveKitAPISecret)
+		voices := voice.NewService(lk, guilds, svc, limiter, cfg.LiveKitPublicURL, log)
 
 		if cfg.Has(config.RoleAPI) {
 			authHTTP := auth.NewHandler(svc, !cfg.IsDev())
@@ -178,6 +181,7 @@ func run() error {
 			guild.NewHandler(guilds, authHTTP.RequireAuth).Register(mux)
 			social.NewHandler(socials, authHTTP.RequireAuth).Register(mux)
 			message.NewHandler(message.NewService(clients.PG, svc, guilds, socials, limiter, eph), authHTTP.RequireAuth).Register(mux)
+			voices.Register(mux, authHTTP.RequireAuth)
 
 			relay, err := events.NewRelay(clients.PG, clients.NATS, log)
 			if err != nil {
@@ -188,6 +192,10 @@ func run() error {
 				go files.Run(ctx, time.Minute)
 			}
 			go svc.RunAccountCleanup(ctx, time.Minute)
+		}
+		if cfg.Has(config.RoleVoice) {
+			voices.RegisterWebhook(mux, lk)
+			go voices.RunReconcile(ctx, 30*time.Second)
 		}
 		if cfg.Has(config.RoleGateway) {
 			gw, err := gateway.New(ctx, gateway.Deps{Auth: svc, Guilds: guilds, Social: socials, Presence: pres,

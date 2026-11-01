@@ -185,7 +185,11 @@ func (s *Service) full(ctx context.Context, q querier, guildID, userID uuid.UUID
 	if err != nil {
 		return Full{}, err
 	}
-	snap := Snapshot{Guild: a.guild, Roles: a.roles, Channels: chs, Member: a.full}
+	voice, err := voiceStatesIn(ctx, q, []uuid.UUID{guildID})
+	if err != nil {
+		return Full{}, err
+	}
+	snap := Snapshot{Guild: a.guild, Roles: a.roles, Channels: chs, Member: a.full, VoiceStates: voice[guildID]}
 	if err := s.attachUsers(ctx, []*Member{&snap.Member}); err != nil {
 		return Full{}, err
 	}

@@ -325,7 +325,7 @@ func (r *router) applyGuildEvent(guildID uuid.UUID, g *guildState, ev event) (ro
 		case before && after:
 			return routed{out: []dispatch{{T: events.ChannelUpdate, D: ev.Data}}}, nil
 		case after:
-			return routed{out: []dispatch{{T: events.ChannelCreate, D: ev.Data}}}, nil
+			return routed{out: append([]dispatch{{T: events.ChannelCreate, D: ev.Data}}, g.voiceIn(ch.ID)...)}, nil
 		case before:
 			return routed{out: []dispatch{channelGone(guildID, ch.ID)}}, nil
 		}
@@ -371,6 +371,13 @@ func (r *router) applyGuildEvent(guildID uuid.UUID, g *guildState, ev event) (ro
 		if g.view.Base.Has(perm.ManageGuild) {
 			return forward(ev), nil
 		}
+
+	case events.VoiceStateUpdate:
+		var st guild.VoiceState
+		if json.Unmarshal(ev.Data, &st) != nil || st.GuildID != guildID {
+			return routed{}, nil
+		}
+		return g.voiceState(st), nil
 
 	case events.MessageCreate, events.MessageUpdate, events.MessageDelete:
 		var p struct {
@@ -428,8 +435,52 @@ func (g *guildState) upsert(ch guild.Channel) {
 	g.view = g.snap.View()
 }
 
+// voiceState applies a VOICE_STATE_UPDATE to the snapshot and says what
+// the session sees of it: the state itself in a channel it can view, a
+// "left" when the user moved from a visible channel to a hidden one, and
+// nothing when both are hidden.
+func (g *guildState) voiceState(st guild.VoiceState) routed {
+	var from *uuid.UUID
+	i := slices.IndexFunc(g.snap.VoiceStates, func(x guild.VoiceState) bool { return x.UserID == st.UserID })
+	if i >= 0 {
+		from = g.snap.VoiceStates[i].ChannelID
+		g.snap.VoiceStates = slices.Delete(g.snap.VoiceStates, i, i+1)
+	}
+	if st.ChannelID != nil {
+		g.snap.VoiceStates = append(g.snap.VoiceStates, st)
+	}
+	visible := func(ch *uuid.UUID) bool {
+		if ch == nil {
+			return false
+		}
+		_, ok := g.view.Channels[*ch]
+		return ok
+	}
+	switch {
+	case visible(st.ChannelID):
+		return routed{out: []dispatch{{T: events.VoiceStateUpdate, D: mustJSON(st)}}}
+	case visible(from):
+		left := guild.VoiceState{UserID: st.UserID, GuildID: st.GuildID}
+		return routed{out: []dispatch{{T: events.VoiceStateUpdate, D: mustJSON(left)}}}
+	}
+	return routed{}
+}
+
+// voiceIn renders the voice states of a channel that just became visible.
+func (g *guildState) voiceIn(channelID uuid.UUID) []dispatch {
+	var out []dispatch
+	for _, st := range g.snap.VoiceStates {
+		if *st.ChannelID == channelID {
+			out = append(out, dispatch{T: events.VoiceStateUpdate, D: mustJSON(st)})
+		}
+	}
+	return out
+}
+
 func (g *guildState) remove(id uuid.UUID) {
 	g.snap.Channels = slices.DeleteFunc(g.snap.Channels, func(c guild.Channel) bool { return c.ID == id })
+	// The database drops the channel's voice states with it.
+	g.snap.VoiceStates = slices.DeleteFunc(g.snap.VoiceStates, func(st guild.VoiceState) bool { return *st.ChannelID == id })
 	g.view = g.snap.View()
 }
 
@@ -445,6 +496,7 @@ func (g *guildState) withDiff(r routed) routed {
 		switch {
 		case is && !was:
 			r.out = append(r.out, dispatch{T: events.ChannelCreate, D: mustJSON(ch)})
+			r.out = append(r.out, g.voiceIn(ch.ID)...)
 		case was && !is:
 			r.out = append(r.out, channelGone(g.snap.Guild.ID, ch.ID))
 		}
