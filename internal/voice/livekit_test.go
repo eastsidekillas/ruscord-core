@@ -90,7 +90,7 @@ func signedWebhook(t *testing.T, body, key, secret string, sum string, at time.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequest(http.MethodPost, WebhookPath, strings.NewReader(body))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, WebhookPath, strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/webhook+json")
 	r.Header.Set("Authorization", tok)
 	return r

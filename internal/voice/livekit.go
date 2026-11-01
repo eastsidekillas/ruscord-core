@@ -158,13 +158,14 @@ func (l *LiveKit) call(ctx context.Context, method string, in, out any, grant *v
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.api+"/twirp/livekit.RoomService/"+method, bytes.NewReader(body))
+	// The URL is RUSCORD_LIVEKIT_URL and a method name from this file.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.api+"/twirp/livekit.RoomService/"+method, bytes.NewReader(body)) //nolint:gosec // G704: configured LiveKit address, not user input
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := l.http.Do(req)
+	resp, err := l.http.Do(req) //nolint:gosec // G704: configured LiveKit address, not user input
 	if err != nil {
 		return fmt.Errorf("livekit %s: %w", method, err)
 	}
