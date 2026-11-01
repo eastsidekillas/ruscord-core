@@ -7,7 +7,9 @@ package voice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,7 +28,13 @@ const tokenTTL = time.Minute
 // roomPrefix names the LiveKit room of a voice channel (ADR-0007).
 const roomPrefix = "voice:"
 
-var ruleJoin = ratelimit.Rule{Name: "voice_join", Limit: 20, Window: time.Minute}
+var (
+	ruleJoin = ratelimit.Rule{Name: "voice_join", Limit: 20, Window: time.Minute}
+	// ruleSelf bounds mute/deafen toggles: each is an event to the guild.
+	ruleSelf = ratelimit.Rule{Name: "voice_self", Limit: 30, Window: time.Minute}
+	// ruleModerate bounds a moderator's voice actions.
+	ruleModerate = ratelimit.Rule{Name: "voice_moderate", Limit: 60, Window: time.Minute}
+)
 
 // Guilds is what voice needs from the guild module; guild.Service implements it.
 type Guilds interface {
@@ -35,6 +43,10 @@ type Guilds interface {
 	VoiceLeft(ctx context.Context, userID, channelID uuid.UUID, participant string) (bool, error)
 	SetSelfVoice(ctx context.Context, userID, channelID uuid.UUID, mute, deaf bool) (guild.VoiceState, error)
 	VoiceRooms(ctx context.Context) (map[uuid.UUID][]guild.VoiceParticipant, error)
+	VoiceGuildIDs(ctx context.Context) ([]uuid.UUID, error)
+	VoiceChecks(ctx context.Context, guildID uuid.UUID) ([]guild.VoiceCheck, error)
+	VoiceModerate(ctx context.Context, actorID, guildID, targetID uuid.UUID, need perm.Permissions) (guild.VoiceSubject, error)
+	SetServerVoice(ctx context.Context, actorID, guildID, targetID uuid.UUID, in guild.ServerVoiceInput) (guild.VoiceState, error)
 }
 
 // Users gives the public profiles shown in a room; auth.Service implements it.
@@ -48,6 +60,8 @@ type Rooms interface {
 	ListRooms(ctx context.Context) ([]string, error)
 	ListParticipants(ctx context.Context, room string) ([]Participant, error)
 	RemoveParticipant(ctx context.Context, room, identity string) error
+	SetPermission(ctx context.Context, room, identity string, p Permission) error
+	DeleteRoom(ctx context.Context, room string) error
 }
 
 type Service struct {
@@ -98,6 +112,7 @@ func (s *Service) Join(ctx context.Context, userID, channelID uuid.UUID) (JoinIn
 		return JoinInfo{}, err
 	}
 	grant := perm.Voice(t.Perms)
+	grant.Sources = allowedSources(t.Perms, t.ServerMute)
 	users, err := s.users.Users(ctx, []uuid.UUID{userID})
 	if err != nil {
 		return JoinInfo{}, err
@@ -117,7 +132,7 @@ func (s *Service) Join(ctx context.Context, userID, channelID uuid.UUID) (JoinIn
 	}
 	room := roomOf(channelID)
 	token, err := s.rooms.JoinToken(Join{Room: room, Identity: userID.String(), Name: name, Metadata: string(meta),
-		Sources: sources, TTL: tokenTTL})
+		Sources: sources, Deaf: t.ServerDeaf, TTL: tokenTTL})
 	if err != nil {
 		return JoinInfo{}, err
 	}
@@ -126,7 +141,119 @@ func (s *Service) Join(ctx context.Context, userID, channelID uuid.UUID) (JoinIn
 
 // SelfVoice records the user's own mute and deafen in their voice channel.
 func (s *Service) SelfVoice(ctx context.Context, userID, channelID uuid.UUID, mute, deaf bool) (guild.VoiceState, error) {
+	if err := s.limiter.Check(ctx, ruleSelf, userID.String()); err != nil {
+		return guild.VoiceState{}, err
+	}
 	return s.guilds.SetSelfVoice(ctx, userID, channelID, mute, deaf)
+}
+
+// ServerVoice mutes or deafens someone (MUTE_MEMBERS, DEAFEN_MEMBERS); the
+// guild module enforces it in the room right after (Enforce).
+func (s *Service) ServerVoice(ctx context.Context, actorID, guildID, targetID uuid.UUID, in guild.ServerVoiceInput) (guild.VoiceState, error) {
+	if err := s.limiter.Check(ctx, ruleModerate, actorID.String()); err != nil {
+		return guild.VoiceState{}, err
+	}
+	return s.guilds.SetServerVoice(ctx, actorID, guildID, targetID, in)
+}
+
+// Disconnect takes someone out of their voice channel (MOVE_MEMBERS there).
+func (s *Service) Disconnect(ctx context.Context, actorID, guildID, targetID uuid.UUID) error {
+	if err := s.limiter.Check(ctx, ruleModerate, actorID.String()); err != nil {
+		return err
+	}
+	vs, err := s.guilds.VoiceModerate(ctx, actorID, guildID, targetID, perm.MoveMembers)
+	if err != nil {
+		return err
+	}
+	if err := s.rooms.RemoveParticipant(ctx, roomOf(*vs.State.ChannelID), targetID.String()); err != nil {
+		return err
+	}
+	_, err = s.guilds.VoiceLeft(ctx, targetID, *vs.State.ChannelID, vs.Participant)
+	return err
+}
+
+// allowedSources are the sources someone may publish: what their
+// permissions allow, without the microphone when a moderator muted them.
+func allowedSources(perms perm.Permissions, serverMute bool) []perm.MediaSource {
+	return slices.DeleteFunc(perm.Voice(perms).Sources, func(src perm.MediaSource) bool {
+		return src == perm.SourceMicrophone && serverMute
+	})
+}
+
+// permissionFor is what someone may do in a room: allowedSources (as
+// LiveKit's TrackSource names), and no incoming sound when deafened.
+func permissionFor(c guild.VoiceCheck) Permission {
+	p := Permission{CanSubscribe: !c.ServerDeaf, CanPublishSources: []string{}}
+	for _, src := range allowedSources(c.Perms, c.ServerMute) {
+		p.CanPublishSources = append(p.CanPublishSources, strings.ToUpper(string(src)))
+	}
+	p.CanPublish = len(p.CanPublishSources) > 0
+	return p
+}
+
+func samePermission(a *Permission, b Permission) bool {
+	if a == nil {
+		return false
+	}
+	x, y := slices.Clone(a.CanPublishSources), slices.Clone(b.CanPublishSources)
+	slices.Sort(x)
+	slices.Sort(y)
+	return a.CanSubscribe == b.CanSubscribe && a.CanPublish == b.CanPublish && slices.Equal(x, y)
+}
+
+// Enforce brings the rooms of a guild in line with permissions as they are
+// now (guild.VoiceEnforcer): whoever may not be in their channel any more
+// is removed, the others get exactly the sources they may publish.
+func (s *Service) Enforce(ctx context.Context, guildID uuid.UUID) error {
+	checks, err := s.guilds.VoiceChecks(ctx, guildID)
+	if err != nil {
+		return err
+	}
+	live := map[uuid.UUID][]Participant{}
+	var errs []error
+	for _, c := range checks {
+		room := roomOf(c.ChannelID)
+		if !c.Allowed {
+			s.log.InfoContext(ctx, "voice: removing someone who lost access", "user", c.UserID, "channel", c.ChannelID)
+			if err := s.rooms.RemoveParticipant(ctx, room, c.UserID.String()); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if _, err := s.guilds.VoiceLeft(ctx, c.UserID, c.ChannelID, c.Participant); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		ps, ok := live[c.ChannelID]
+		if !ok {
+			if ps, err = s.rooms.ListParticipants(ctx, room); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			live[c.ChannelID] = ps
+		}
+		i := slices.IndexFunc(ps, func(p Participant) bool { return p.Identity == c.UserID.String() })
+		if i < 0 {
+			continue // not connected now; the periodic check clears the state
+		}
+		if want := permissionFor(c); !samePermission(ps[i].Permission, want) {
+			if err := s.rooms.SetPermission(ctx, room, c.UserID.String(), want); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// CloseRooms closes the rooms of deleted voice channels (guild.VoiceEnforcer).
+func (s *Service) CloseRooms(ctx context.Context, channelIDs []uuid.UUID) error {
+	var errs []error
+	for _, ch := range channelIDs {
+		if err := s.rooms.DeleteRoom(ctx, roomOf(ch)); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // webhookEvent is the part of LiveKit's WebhookEvent voice reads.
@@ -232,7 +359,18 @@ func (s *Service) Reconcile(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	// Changes whose enforcement failed (LiveKit was down) are applied now.
+	guildIDs, err := s.guilds.VoiceGuildIDs(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, g := range guildIDs {
+		if err := s.Enforce(ctx, g); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // RunReconcile checks the rooms every interval until ctx ends.

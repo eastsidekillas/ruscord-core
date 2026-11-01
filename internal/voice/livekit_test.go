@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -44,14 +45,16 @@ func TestJoinToken(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		sources []string
+		deaf    bool
 		publish bool
 	}{
-		{"speaker with a screen", []string{"microphone", "screen_share", "screen_share_audio"}, true},
-		{"listener", nil, false},
+		{"speaker with a screen", []string{"microphone", "screen_share", "screen_share_audio"}, false, true},
+		{"listener", nil, false, false},
+		{"deafened by a moderator", []string{"camera"}, true, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			tok, err := lk.JoinToken(Join{Room: "voice:r", Identity: "u1", Name: "Аня", Metadata: `{"avatar":null}`,
-				Sources: c.sources, TTL: time.Minute})
+				Sources: c.sources, Deaf: c.deaf, TTL: time.Minute})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -66,7 +69,7 @@ func TestJoinToken(t *testing.T) {
 				t.Fatalf("video grant %+v: join only, never admin", v)
 			case *v.CanPublish != c.publish || !slices.Equal(v.CanPublishSources, c.sources):
 				t.Fatalf("publish %v %v", *v.CanPublish, v.CanPublishSources)
-			case !*v.CanSubscribe || *v.CanPublishData || *v.CanUpdateOwnMetadata:
+			case *v.CanSubscribe == c.deaf || *v.CanPublishData || *v.CanUpdateOwnMetadata:
 				t.Fatalf("subscribe %v, data %v, own metadata %v", *v.CanSubscribe, *v.CanPublishData, *v.CanUpdateOwnMetadata)
 			}
 		})
@@ -153,16 +156,30 @@ type fakeRoomService struct {
 
 func (f *fakeRoomService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	method := strings.TrimPrefix(r.URL.Path, "/twirp/livekit.RoomService/")
-	var in map[string]string
-	_ = json.NewDecoder(r.Body).Decode(&in)
+	var raw map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&raw)
+	in := map[string]string{}
+	for k, v := range raw {
+		if s, ok := v.(string); ok {
+			in[k] = s
+		}
+	}
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	var c claims
 	if _, err := jwt.ParseWithClaims(tok, &c, func(*jwt.Token) (any, error) { return []byte(testSecret), nil }); err != nil || c.Video == nil {
 		http.Error(w, `{"code":"unauthenticated"}`, http.StatusUnauthorized)
 		return
 	}
-	needAdmin := method != "ListRooms"
-	if needAdmin && (!c.Video.RoomAdmin || c.Video.Room != in["room"]) || !needAdmin && !c.Video.RoomList {
+	var allowed bool
+	switch method {
+	case "ListRooms":
+		allowed = c.Video.RoomList
+	case "DeleteRoom":
+		allowed = c.Video.RoomCreate
+	default:
+		allowed = c.Video.RoomAdmin && c.Video.Room == in["room"]
+	}
+	if !allowed {
 		http.Error(w, `{"code":"permission_denied"}`, http.StatusForbidden)
 		return
 	}
@@ -182,6 +199,28 @@ func (f *fakeRoomService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"participants": ps})
+	case "UpdateParticipant":
+		ps := f.rooms[in["room"]]
+		i := slices.IndexFunc(ps, func(p Participant) bool { return p.Identity == in["identity"] })
+		if i < 0 {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"code":"not_found"}`))
+			return
+		}
+		b, _ := json.Marshal(raw["permission"])
+		var p Permission
+		_ = json.Unmarshal(b, &p)
+		ps[i].Permission = &p
+		f.calls[len(f.calls)-1] += " " + strings.Join(p.CanPublishSources, ",") + fmt.Sprintf(" subscribe=%v", p.CanSubscribe)
+		_ = json.NewEncoder(w).Encode(ps[i])
+	case "DeleteRoom":
+		if _, ok := f.rooms[in["room"]]; !ok {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"code":"not_found"}`))
+			return
+		}
+		delete(f.rooms, in["room"])
+		_, _ = w.Write([]byte(`{}`))
 	case "RemoveParticipant":
 		ps := f.rooms[in["room"]]
 		i := slices.IndexFunc(ps, func(p Participant) bool { return p.Identity == in["identity"] })
