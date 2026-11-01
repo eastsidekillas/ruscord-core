@@ -52,6 +52,34 @@ jobs:
         with:
           go-version-file: go.mod
 
+  # The real client (ruscord-fe master) against this core, both in Docker:
+  # register, friends, DMs, servers, roles, bans, devices, a dropped
+  # connection and a core restart (ruscord-fe e2e/ci.sh).
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: ruscord-core }
+      # Public now; if the repository becomes private, this needs a token
+      # with read access to it (repository secret).
+      - uses: actions/checkout@v4
+        with: { repository: eastsidekillas/ruscord-fe, ref: master, path: ruscord-fe }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ruscord-fe/package-lock.json
+      - run: npm ci
+        working-directory: ruscord-fe
+      - run: npx playwright install --with-deps chromium
+        working-directory: ruscord-fe
+      - run: ruscord-fe/e2e/ci.sh ruscord-core ruscord-fe
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failures
+          path: ruscord-fe/e2e/failures/
+
   compose:
     runs-on: ubuntu-latest
     steps:
