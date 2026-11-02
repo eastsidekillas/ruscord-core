@@ -46,6 +46,7 @@ type Guilds interface {
 	VoiceGuildIDs(ctx context.Context) ([]uuid.UUID, error)
 	VoiceChecks(ctx context.Context, guildID uuid.UUID) ([]guild.VoiceCheck, error)
 	VoiceModerate(ctx context.Context, actorID, guildID, targetID uuid.UUID, need perm.Permissions) (guild.VoiceSubject, error)
+	VoiceMove(ctx context.Context, actorID, guildID, targetID, channelID uuid.UUID) (guild.VoiceSubject, error)
 	SetServerVoice(ctx context.Context, actorID, guildID, targetID uuid.UUID, in guild.ServerVoiceInput) (guild.VoiceState, error)
 }
 
@@ -170,10 +171,30 @@ func (s *Service) Disconnect(ctx context.Context, actorID, guildID, targetID uui
 	if err != nil {
 		return err
 	}
-	if err := s.rooms.RemoveParticipant(ctx, roomOf(*vs.State.ChannelID), targetID.String()); err != nil {
+	return s.takeOut(ctx, targetID, *vs.State.ChannelID, vs.Participant)
+}
+
+// Move takes someone to another voice channel of the guild (ADR-0031).
+// LiveKit cannot move a participant between rooms: the core tells their
+// clients where to go (VOICE_MOVE) and takes them out of the old room at
+// once, so a client that ignores the move does not stay there.
+func (s *Service) Move(ctx context.Context, actorID, guildID, targetID, channelID uuid.UUID) error {
+	if err := s.limiter.Check(ctx, ruleModerate, actorID.String()); err != nil {
 		return err
 	}
-	_, err = s.guilds.VoiceLeft(ctx, targetID, *vs.State.ChannelID, vs.Participant)
+	vs, err := s.guilds.VoiceMove(ctx, actorID, guildID, targetID, channelID)
+	if err != nil {
+		return err
+	}
+	return s.takeOut(ctx, targetID, *vs.State.ChannelID, vs.Participant)
+}
+
+// takeOut removes someone from a channel's room and clears their state.
+func (s *Service) takeOut(ctx context.Context, userID, channelID uuid.UUID, participant string) error {
+	if err := s.rooms.RemoveParticipant(ctx, roomOf(channelID), userID.String()); err != nil {
+		return err
+	}
+	_, err := s.guilds.VoiceLeft(ctx, userID, channelID, participant)
 	return err
 }
 
@@ -220,11 +241,7 @@ func (s *Service) Enforce(ctx context.Context, guildID uuid.UUID) error {
 		room := roomOf(c.ChannelID)
 		if !c.Allowed {
 			s.log.InfoContext(ctx, "voice: removing someone who lost access", "user", c.UserID, "channel", c.ChannelID)
-			if err := s.rooms.RemoveParticipant(ctx, room, c.UserID.String()); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			if _, err := s.guilds.VoiceLeft(ctx, c.UserID, c.ChannelID, c.Participant); err != nil {
+			if err := s.takeOut(ctx, c.UserID, c.ChannelID, c.Participant); err != nil {
 				errs = append(errs, err)
 			}
 			continue

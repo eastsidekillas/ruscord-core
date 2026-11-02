@@ -17,6 +17,7 @@ func (s *Service) Register(mux *http.ServeMux, requireAuth func(http.Handler) ht
 	mux.Handle("PATCH /api/v1/channels/{channel}/voice", requireAuth(httpx.Handle(s.selfVoice)))
 	mux.Handle("PATCH /api/v1/guilds/{guild}/voice-states/{user}", requireAuth(httpx.Handle(s.serverVoice)))
 	mux.Handle("DELETE /api/v1/guilds/{guild}/voice-states/{user}", requireAuth(httpx.Handle(s.disconnect)))
+	mux.Handle("POST /api/v1/guilds/{guild}/voice-states/{user}/move", requireAuth(httpx.Handle(s.move)))
 }
 
 func guildAndUser(r *http.Request) (guildID, userID uuid.UUID, err error) {
@@ -50,6 +51,23 @@ func (s *Service) disconnect(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return httpx.NoContent(w, s.Disconnect(r.Context(), auth.UserID(r), g, u))
+}
+
+func (s *Service) move(w http.ResponseWriter, r *http.Request) error {
+	g, u, err := guildAndUser(r)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		ChannelID uuid.UUID `json:"channel_id"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		return err
+	}
+	if in.ChannelID == uuid.Nil {
+		return httpx.Validation(map[string]string{"channel_id": "Укажите голосовой канал"})
+	}
+	return httpx.NoContent(w, s.Move(r.Context(), auth.UserID(r), g, u, in.ChannelID))
 }
 
 // WebhookPath is where LiveKit posts its webhooks. It is outside /api, so

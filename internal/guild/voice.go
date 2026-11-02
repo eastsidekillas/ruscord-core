@@ -42,6 +42,9 @@ var (
 	// errTargetNotInVoice: the member is not in a voice channel the actor
 	// can see.
 	errTargetNotInVoice = httpx.NewError(http.StatusNotFound, "not_in_voice", "Участник не в голосовом канале")
+	// errCannotMove: the member could not enter the channel themself.
+	errCannotMove   = httpx.NewError(http.StatusConflict, "cannot_move", "Участник не может зайти в этот канал")
+	errAlreadyThere = httpx.NewError(http.StatusConflict, "already_in_channel", "Участник уже в этом канале")
 )
 
 // VoiceTarget is a voice channel a user may enter and what they may do there.
@@ -488,6 +491,60 @@ func (s *Service) VoiceModerate(ctx context.Context, actorID, guildID, targetID 
 		return VoiceSubject{}, notFound(err)
 	}
 	return voiceSubject(ctx, s.pg, a, guildID, targetID, need, false)
+}
+
+// VoiceMoveEvent tells a user's clients that a moderator moved them: the
+// one in FromChannelID joins ChannelID.
+type VoiceMoveEvent struct {
+	GuildID       uuid.UUID `json:"guild_id"`
+	ChannelID     uuid.UUID `json:"channel_id"`
+	FromChannelID uuid.UUID `json:"from_channel_id"`
+}
+
+// VoiceMove checks that actorID may move targetID from their voice channel
+// to channelID and tells the target's clients to go there (VOICE_MOVE on
+// the user topic). The actor needs MOVE_MEMBERS in both channels and
+// CONNECT in the new one, like in Discord; the target must be able to
+// enter it themself, limit included (docs/adr/0031-voice-move.md). The
+// caller takes the target out of the old room.
+func (s *Service) VoiceMove(ctx context.Context, actorID, guildID, targetID, channelID uuid.UUID) (VoiceSubject, error) {
+	var vs VoiceSubject
+	err := s.mutate(ctx, guildID, actorID, func(tx pgx.Tx, a access) error {
+		var err error
+		if vs, err = voiceSubject(ctx, tx, a, guildID, targetID, perm.MoveMembers, true); err != nil {
+			return err
+		}
+		ch, err := getChannel(ctx, tx, channelID)
+		if err != nil {
+			return notFound(err)
+		}
+		p := a.in(ch)
+		if ch.GuildID != guildID || !p.Has(perm.ViewChannel) {
+			return httpx.ErrNotFound
+		}
+		if ch.Type != ChannelVoice {
+			return errNotVoice
+		}
+		if !p.Has(perm.Connect | perm.MoveMembers) {
+			return httpx.ErrForbidden
+		}
+		if ch.ID == *vs.State.ChannelID {
+			return errAlreadyThere
+		}
+		ta, err := loadAccess(ctx, tx, guildID, targetID)
+		if err != nil {
+			return notFound(err)
+		}
+		if _, err := voiceTarget(ctx, tx, ta, ch, targetID); err != nil {
+			if errors.Is(err, httpx.ErrNotFound) || errors.Is(err, httpx.ErrForbidden) {
+				return errCannotMove
+			}
+			return err // errVoiceFull included
+		}
+		return events.Write(ctx, tx, events.Event{Topic: events.UserTopic(targetID), Type: events.VoiceMove,
+			Data: VoiceMoveEvent{GuildID: guildID, ChannelID: ch.ID, FromChannelID: *vs.State.ChannelID}})
+	})
+	return vs, err
 }
 
 // ServerVoiceInput mutes or deafens someone in voice; absent fields stay.

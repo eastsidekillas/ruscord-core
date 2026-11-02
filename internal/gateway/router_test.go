@@ -197,6 +197,10 @@ func TestRoute(t *testing.T) {
 		{name: "friend request", in: ev(ut, events.RelationshipAdd, map[string]any{"id": f.other, "type": 3}), want: []string{events.RelationshipAdd + ":" + f.other.String()}},
 		{name: "friend removed", in: ev(ut, events.RelationshipRemove, map[string]any{"id": f.other, "type": 1}), want: []string{events.RelationshipRemove + ":" + f.other.String()}},
 
+		// voice
+		{name: "moved to another voice channel", in: ev(ut, events.VoiceMove, map[string]any{"guild_id": f.guildID, "channel_id": f.voice.ID, "from_channel_id": uuid.New()}),
+			want: []string{events.VoiceMove + ":-"}},
+
 		// sessions and junk
 		{name: "my session revoked", in: ev(ut, events.SessionRevoke, map[string]any{"session_id": f.authSID}), revoked: true},
 		{name: "another session of mine revoked", in: ev(ut, events.SessionRevoke, map[string]any{"session_id": uuid.New()}), want: []string{events.SessionRevoke + ":-"}},
