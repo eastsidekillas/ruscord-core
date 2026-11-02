@@ -19,6 +19,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
+	"github.com/eastsidekillas/ruscord-core/internal/social"
 )
 
 // tokenTTL bounds the first connection with a token (ADR-0007); LiveKit
@@ -72,6 +73,7 @@ type Service struct {
 	limiter   *ratelimit.Limiter
 	publicURL string
 	log       *slog.Logger
+	calls     Calls
 }
 
 // NewService: publicURL is the LiveKit address clients connect to; empty
@@ -104,6 +106,9 @@ type JoinInfo struct {
 	// HighQuality: the screen may be shared above 720p (STREAM_HQ). LiveKit
 	// cannot cap a resolution, so the client picks it.
 	HighQuality bool `json:"high_quality"`
+
+	// Call is the DM call joined (ADR-0032); absent for voice channels.
+	Call *social.Call `json:"call,omitempty"`
 }
 
 // Join issues a token for a voice channel the user may enter now. Being in
@@ -116,8 +121,16 @@ func (s *Service) Join(ctx context.Context, userID, channelID uuid.UUID) (JoinIn
 	if err != nil {
 		return JoinInfo{}, err
 	}
-	grant := perm.Voice(t.Perms)
-	grant.Sources = allowedSources(t.Perms, t.ServerMute)
+	return s.token(ctx, userID, roomOf(channelID), t.Perms, allowedSources(t.Perms, t.ServerMute), t.ServerDeaf)
+}
+
+// token issues a LiveKit token for room with the profile as the
+// participant's name and metadata; perms give push-to-talk and quality,
+// sources what may be published, deaf no incoming sound.
+func (s *Service) token(ctx context.Context, userID uuid.UUID, room string, perms perm.Permissions,
+	allowed []perm.MediaSource, deaf bool) (JoinInfo, error) {
+	grant := perm.Voice(perms)
+	grant.Sources = allowed
 	users, err := s.users.Users(ctx, []uuid.UUID{userID})
 	if err != nil {
 		return JoinInfo{}, err
@@ -135,9 +148,8 @@ func (s *Service) Join(ctx context.Context, userID, channelID uuid.UUID) (JoinIn
 	if name == "" {
 		name = u.Username
 	}
-	room := roomOf(channelID)
 	token, err := s.rooms.JoinToken(Join{Room: room, Identity: userID.String(), Name: name, Metadata: string(meta),
-		Sources: sources, Deaf: t.ServerDeaf, TTL: tokenTTL})
+		Sources: sources, Deaf: deaf, TTL: tokenTTL})
 	if err != nil {
 		return JoinInfo{}, err
 	}
@@ -297,13 +309,16 @@ func (s *Service) Webhook(ctx context.Context, body []byte) error {
 	if ev.Room == nil || ev.Participant == nil {
 		return nil
 	}
-	channelID, ok := channelOf(ev.Room.Name)
-	if !ok {
-		return nil
-	}
 	userID, err := uuid.Parse(ev.Participant.Identity)
 	if err != nil {
 		return nil // not one of our users
+	}
+	if callID, ok := callOf(ev.Room.Name); ok {
+		return s.callEvent(ctx, ev.Event, userID, callID, ev.Participant.Sid)
+	}
+	channelID, ok := channelOf(ev.Room.Name)
+	if !ok {
+		return nil
 	}
 	switch ev.Event {
 	case "participant_joined":
@@ -391,6 +406,9 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		if err := s.Enforce(ctx, g); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if err := s.reconcileCalls(ctx); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }

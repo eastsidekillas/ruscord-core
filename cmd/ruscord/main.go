@@ -175,6 +175,7 @@ func run() error {
 		lk := voice.NewLiveKit(cfg.LiveKitURL, cfg.LiveKitAPIKey, cfg.LiveKitAPISecret)
 		voices := voice.NewService(lk, guilds, svc, limiter, cfg.LiveKitPublicURL, log)
 		guilds.WithVoice(voices)
+		voices.WithCalls(socials)
 
 		if cfg.Has(config.RoleAPI) {
 			authHTTP := auth.NewHandler(svc, !cfg.IsDev())

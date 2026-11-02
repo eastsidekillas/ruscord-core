@@ -46,6 +46,8 @@ type DM struct {
 	OwnerID    *uuid.UUID        `json:"owner_id,omitempty"`
 	CreatedAt  time.Time         `json:"created_at"`
 	Recipients []auth.PublicUser `json:"recipients"`
+	// Call is the call going on in the channel, in lists (ADR-0032).
+	Call *Call `json:"call,omitempty"`
 
 	recipientIDs []uuid.UUID
 }
@@ -273,6 +275,9 @@ func (s *Service) ListDMs(ctx context.Context, me uuid.UUID) ([]DM, error) {
 	}
 	ds, err := pgx.CollectRows(rows, scanDM)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.withCalls(ctx, ds); err != nil {
 		return nil, err
 	}
 	return ds, s.withRecipients(ctx, ds)
