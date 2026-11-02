@@ -103,8 +103,8 @@ jobs:
       - name: the after-deploy check, trusting Caddy's local certificate authority
         working-directory: ruscord-core
         run: |
-          docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/staging/compose.yml --profile staging \
-            cp caddy:/data/caddy/pki/authorities/local/root.crt caddy-root.crt
+          docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/staging/compose.yml \
+            --profile app --profile web --profile staging cp caddy:/data/caddy/pki/authorities/local/root.crt caddy-root.crt
           RUSCORD_CHECK_CACERT=caddy-root.crt ./scripts/staging-check.sh
       - if: failure()
         uses: actions/upload-artifact@v4
