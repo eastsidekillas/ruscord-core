@@ -99,6 +99,10 @@ type JoinInfo struct {
 	// Sources the user may publish there; the token allows only these.
 	Sources    []perm.MediaSource `json:"sources"`
 	PushToTalk bool               `json:"push_to_talk"`
+
+	// HighQuality: the screen may be shared above 720p (STREAM_HQ). LiveKit
+	// cannot cap a resolution, so the client picks it.
+	HighQuality bool `json:"high_quality"`
 }
 
 // Join issues a token for a voice channel the user may enter now. Being in
@@ -136,7 +140,8 @@ func (s *Service) Join(ctx context.Context, userID, channelID uuid.UUID) (JoinIn
 	if err != nil {
 		return JoinInfo{}, err
 	}
-	return JoinInfo{URL: s.publicURL, Token: token, Room: room, Sources: grant.Sources, PushToTalk: grant.PushToTalk}, nil
+	return JoinInfo{URL: s.publicURL, Token: token, Room: room, Sources: grant.Sources, PushToTalk: grant.PushToTalk,
+		HighQuality: grant.HighQuality}, nil
 }
 
 // SelfVoice records the user's own mute and deafen in their voice channel.

@@ -83,13 +83,17 @@ func TestJoinIssuesAToken(t *testing.T) {
 		map[string]any{"type": 2, "deny": permStr(perm.Stream)})
 
 	info := apitest.Obj(bob.Expect(http.StatusOK, "POST", "/api/v1/channels/"+voice+"/voice", nil))
-	if info["room"] != "voice:"+voice || info["url"] != "" || info["push_to_talk"] != false {
+	// The owner has every right, STREAM_HQ included; Bob only the defaults.
+	if info["room"] != "voice:"+voice || info["url"] != "" || info["push_to_talk"] != false || info["high_quality"] != false {
 		t.Fatalf("join info %v", info)
 	}
 	cl := parse(t, apitest.Str(info["token"]), testSecret, e.lk.now())
 	if cl.Subject != bob.ID.String() || cl.Name != "bob" || cl.Video.Room != "voice:"+voice ||
 		!slices.Equal(cl.Video.CanPublishSources, []string{"microphone", "camera"}) || cl.Video.RoomAdmin {
 		t.Fatalf("token claims %+v %+v", cl, cl.Video)
+	}
+	if own := apitest.Obj(owner.Expect(http.StatusOK, "POST", "/api/v1/channels/"+voice+"/voice", nil)); own["high_quality"] != true {
+		t.Fatalf("owner join info %v", own)
 	}
 	bob.Expect(http.StatusBadRequest, "POST", "/api/v1/channels/"+text+"/voice", nil)
 	e.User("stranger").Expect(http.StatusNotFound, "POST", "/api/v1/channels/"+voice+"/voice", nil)
