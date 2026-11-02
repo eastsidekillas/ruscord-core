@@ -222,7 +222,7 @@ username; email уникален без учёта регистра.
 
 | Метод и путь | Тело | Ответ |
 |---|---|---|
-| `GET /users/@me/channels` | — | 200, лички и группы, новые первыми |
+| `GET /users/@me/channels` | — | 200, лички и группы, новые первыми; у канала с идущим звонком — `call` (ADR-0032) |
 | `POST /users/@me/channels` | `{recipient_id}` | 200, личка 1:1 (создаётся при первом вызове) |
 | `POST /users/@me/channels` | `{recipients: [id], name?}` | 200, новая группа |
 | `PATCH /users/@me/channels/{id}` | `{name}` (`""` или `null` сбрасывает) | 200, группа |
@@ -299,6 +299,8 @@ nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
 | `PATCH /guilds/{id}/voice-states/{user}` | `{mute?, deaf?}` | 200, голосовое состояние | 403 (нет `MUTE_MEMBERS` / `DEAFEN_MEMBERS` в канале цели), 404 `not_in_voice`, 422, 429 |
 | `DELETE /guilds/{id}/voice-states/{user}` | — | 204 | 403 (нет `MOVE_MEMBERS`), 404 `not_in_voice`, 429 |
 | `POST /guilds/{id}/voice-states/{user}/move` | `{channel_id}` | 204 | 400 `not_voice_channel`, 403 (нет `MOVE_MEMBERS` в старом или новом канале, `CONNECT` в новом), 404 (`not_in_voice`, канал не найден), 409 `already_in_channel`, `cannot_move` (участник сам не может зайти), `channel_full`, 422, 429 |
+| `POST /channels/{id}/call` | — | 200, `{url, token, room, sources, push_to_talk, high_quality, call}`: начинает звонок в личке или отвечает на идущий | 403 `cannot_call`, 404, 429 |
+| `POST /channels/{id}/call/decline` | — | 204 | 404 (`no_call`, не ваша личка) |
 
 Вход выдаёт токен LiveKit на 60 с. С ним клиент подключается к LiveKit:
 `url` — его адрес, пустой `url` значит свой адрес под `/livekit` (nginx
@@ -400,6 +402,8 @@ Heartbeat нужно слать каждые `heartbeat_interval` (30 с); бе�
 | `USER_UPDATE` | вашим сессиям, когда изменился ваш аккаунт (имя, «о себе», аватар, выбранный статус); полный пользователь |
 | `VOICE_STATE_UPDATE` | участникам сервера, кто видит голосовой канал: вошёл, вышел, выключил микрофон или звук; голосовое состояние, `channel_id: null` — вышел (так же выглядит переход в скрытый от вас канал). Когда канал становится видимым, после `CHANNEL_CREATE` приходят состояния тех, кто в нём |
 | `VOICE_MOVE {guild_id, channel_id, from_channel_id}` | вашим сессиям, когда модератор перенёс вас в другой голосовой канал: клиент, который был в `from_channel_id`, входит в `channel_id` (`POST /channels/{id}/voice`). Из старой комнаты ядро выводит сразу (ADR-0031) |
+| `CALL_CREATE`, `CALL_UPDATE` | получателям лички: звонок `{id, channel_id, started_by, started_at, ringing, ring_until, members}`. Звонить перестают в `ring_until`, отдельного события нет (ADR-0032) |
+| `CALL_DELETE {id, channel_id}` | получателям лички: звонок закончился |
 | `SESSION_CREATE` | вашим другим сессиям, когда вы вошли на новом устройстве; сессия без `current` |
 | `SESSION_REVOKE` | вашим другим сессиям, когда одна из ваших сессий завершена; `{session_id}`. Сокеты самой завершённой сессии закрываются с кодом 4004 |
 | `USER_PROFILE_UPDATE {user}` | участникам ваших серверов, когда изменились имя или аватар; публичный пользователь. Одно изменение приходит один раз, сколько бы общих серверов ни было |

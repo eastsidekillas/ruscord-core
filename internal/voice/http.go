@@ -1,6 +1,7 @@
 package voice
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -13,11 +14,21 @@ import (
 
 // Register adds the client routes (API role).
 func (s *Service) Register(mux *http.ServeMux, requireAuth func(http.Handler) http.Handler) {
-	mux.Handle("POST /api/v1/channels/{channel}/voice", requireAuth(httpx.Handle(s.join)))
+	mux.Handle("POST /api/v1/channels/{channel}/voice", requireAuth(httpx.Handle(joinWith(s.Join))))
 	mux.Handle("PATCH /api/v1/channels/{channel}/voice", requireAuth(httpx.Handle(s.selfVoice)))
 	mux.Handle("PATCH /api/v1/guilds/{guild}/voice-states/{user}", requireAuth(httpx.Handle(s.serverVoice)))
 	mux.Handle("DELETE /api/v1/guilds/{guild}/voice-states/{user}", requireAuth(httpx.Handle(s.disconnect)))
 	mux.Handle("POST /api/v1/guilds/{guild}/voice-states/{user}/move", requireAuth(httpx.Handle(s.move)))
+	mux.Handle("POST /api/v1/channels/{channel}/call", requireAuth(httpx.Handle(joinWith(s.JoinCall))))
+	mux.Handle("POST /api/v1/channels/{channel}/call/decline", requireAuth(httpx.Handle(s.declineCall)))
+}
+
+func (s *Service) declineCall(w http.ResponseWriter, r *http.Request) error {
+	ch, err := httpx.PathUUID(r, "channel")
+	if err != nil {
+		return err
+	}
+	return httpx.NoContent(w, s.DeclineCall(r.Context(), auth.UserID(r), ch))
 }
 
 func guildAndUser(r *http.Request) (guildID, userID uuid.UUID, err error) {
@@ -95,17 +106,21 @@ func (s *Service) RegisterWebhook(mux *http.ServeMux, lk *LiveKit) {
 	})
 }
 
-func (s *Service) join(w http.ResponseWriter, r *http.Request) error {
-	ch, err := httpx.PathUUID(r, "channel")
-	if err != nil {
-		return err
+// joinWith answers a join with the token join issues for the path's channel:
+// a voice channel or a DM call.
+func joinWith(join func(ctx context.Context, userID, channelID uuid.UUID) (JoinInfo, error)) func(http.ResponseWriter, *http.Request) error {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		ch, err := httpx.PathUUID(r, "channel")
+		if err != nil {
+			return err
+		}
+		info, err := join(r.Context(), auth.UserID(r), ch)
+		if err != nil {
+			return err
+		}
+		httpx.WriteJSON(w, http.StatusOK, info)
+		return nil
 	}
-	info, err := s.Join(r.Context(), auth.UserID(r), ch)
-	if err != nil {
-		return err
-	}
-	httpx.WriteJSON(w, http.StatusOK, info)
-	return nil
 }
 
 type selfVoiceInput struct {

@@ -14,6 +14,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/apitest"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/testdb"
+	"github.com/eastsidekillas/ruscord-core/internal/social"
 )
 
 // Integration tests need a real Postgres: set RUSCORD_TEST_POSTGRES_URL.
@@ -39,6 +40,9 @@ func newEnv(t *testing.T) *env {
 	svc.Register(e.Mux, e.RequireAuth)
 	svc.RegisterWebhook(e.Mux, lk)
 	guilds.WithVoice(svc)
+	socials := social.NewService(e.PG, e.Auth, guilds, e.Limiter)
+	social.NewHandler(socials, e.RequireAuth).Register(e.Mux)
+	svc.WithCalls(socials)
 	return &env{Env: e, guilds: guilds, svc: svc, lk: lk, rooms: f}
 }
 

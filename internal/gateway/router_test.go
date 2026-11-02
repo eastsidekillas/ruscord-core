@@ -197,6 +197,13 @@ func TestRoute(t *testing.T) {
 		{name: "friend request", in: ev(ut, events.RelationshipAdd, map[string]any{"id": f.other, "type": 3}), want: []string{events.RelationshipAdd + ":" + f.other.String()}},
 		{name: "friend removed", in: ev(ut, events.RelationshipRemove, map[string]any{"id": f.other, "type": 1}), want: []string{events.RelationshipRemove + ":" + f.other.String()}},
 
+		// calls in direct messages
+		{name: "a call starts in my DM", in: ev(events.ChannelTopic(f.dm), events.CallCreate, map[string]any{"id": f.dm, "channel_id": f.dm}),
+			want: []string{events.CallCreate + ":" + f.dm.String()}},
+		{name: "a call ends in my DM", in: ev(events.ChannelTopic(f.dm), events.CallDelete, map[string]any{"id": f.dm, "channel_id": f.dm}),
+			want: []string{events.CallDelete + ":" + f.dm.String()}},
+		{name: "a call in someone else's DM", in: ev(events.ChannelTopic(uuid.New()), events.CallUpdate, map[string]any{"id": f.dm})},
+
 		// voice
 		{name: "moved to another voice channel", in: ev(ut, events.VoiceMove, map[string]any{"guild_id": f.guildID, "channel_id": f.voice.ID, "from_channel_id": uuid.New()}),
 			want: []string{events.VoiceMove + ":-"}},

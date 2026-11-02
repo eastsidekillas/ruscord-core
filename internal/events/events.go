@@ -60,6 +60,14 @@ const (
 	// cannot move a participant between rooms (docs/adr/0031-voice-move.md).
 	VoiceMove = "VOICE_MOVE"
 
+	// CallCreate, CallUpdate and CallDelete go to a DM channel's topic when
+	// a call starts there, someone joins, leaves, answers or declines, and
+	// when it ends (social.Call; CALL_DELETE carries {id, channel_id}).
+	// docs/adr/0032-dm-calls.md.
+	CallCreate = "CALL_CREATE"
+	CallUpdate = "CALL_UPDATE"
+	CallDelete = "CALL_DELETE"
+
 	// SessionRevoke goes to the user topic when a sign-in session is revoked
 	// (logout, refresh-token reuse, signed out from another device). The
 	// gateway closes the connections of that session and forwards the event

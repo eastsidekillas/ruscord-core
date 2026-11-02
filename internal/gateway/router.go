@@ -151,7 +151,7 @@ func (r *router) route(ctx context.Context, ev event) (routed, error) {
 		}
 		return r.guildEvent(topicID, g, ev)
 	case "channel":
-		if r.dms[topicID] && isMessage(ev.Type) {
+		if r.dms[topicID] && (isMessage(ev.Type) || isCall(ev.Type)) {
 			return forward(ev), nil
 		}
 	}
@@ -162,6 +162,10 @@ func forward(ev event) routed { return routed{out: []dispatch{{T: ev.Type, D: ev
 
 func isMessage(t string) bool {
 	return t == events.MessageCreate || t == events.MessageUpdate || t == events.MessageDelete
+}
+
+func isCall(t string) bool {
+	return t == events.CallCreate || t == events.CallUpdate || t == events.CallDelete
 }
 
 type idPayload struct {

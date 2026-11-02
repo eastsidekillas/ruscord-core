@@ -13,18 +13,32 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/apitest"
 )
 
-// inRoom puts u in a voice channel the way LiveKit would: in the room, then
-// the joined webhook.
+// inRoom puts u in a voice channel the way LiveKit would.
 func (e *env) inRoom(u *apitest.User, channel string) Participant {
+	e.T.Helper()
+	return e.enter(u, "voice:"+channel)
+}
+
+// enter puts u in a LiveKit room the way LiveKit would: in the room, then
+// the joined webhook.
+func (e *env) enter(u *apitest.User, room string) Participant {
 	e.T.Helper()
 	p := Participant{Sid: "PA_" + u.ID.String()[:8], Identity: u.ID.String(),
 		Permission: &Permission{CanSubscribe: true, CanPublish: true, CanPublishSources: []string{"MICROPHONE", "CAMERA", "SCREEN_SHARE", "SCREEN_SHARE_AUDIO"}}}
-	room := "voice:" + channel
 	e.rooms.rooms[room] = append(e.rooms.rooms[room], p)
 	if code := e.webhook("participant_joined", room, p); code != http.StatusOK {
 		e.T.Fatalf("joined: %d", code)
 	}
 	return p
+}
+
+// leave takes u out of a room the way LiveKit would.
+func (e *env) leave(u *apitest.User, room string) {
+	e.T.Helper()
+	e.rooms.rooms[room] = slices.DeleteFunc(e.rooms.rooms[room], func(p Participant) bool { return p.Identity == u.ID.String() })
+	if code := e.webhook("participant_left", room, Participant{Sid: "PA_" + u.ID.String()[:8], Identity: u.ID.String()}); code != http.StatusOK {
+		e.T.Fatalf("left: %d", code)
+	}
 }
 
 func (e *env) permOf(room string, u *apitest.User) *Permission {
@@ -77,10 +91,7 @@ func TestRoomsFollowPermissions(t *testing.T) {
 	}
 	// Leaving and coming back does not undo it: the new token has no
 	// microphone and no incoming sound.
-	e.rooms.rooms[room] = slices.DeleteFunc(e.rooms.rooms[room], func(p Participant) bool { return p.Identity == bob.ID.String() })
-	if ok := e.webhook("participant_left", room, Participant{Sid: "PA_" + bob.ID.String()[:8], Identity: bob.ID.String()}); ok != http.StatusOK {
-		t.Fatalf("left: %d", ok)
-	}
+	e.leave(bob, room)
 	join := apitest.Obj(bob.Expect(http.StatusOK, "POST", "/api/v1/channels/"+voice+"/voice", nil))
 	cl := parse(t, apitest.Str(join["token"]), testSecret, e.lk.now())
 	if slices.Contains(cl.Video.CanPublishSources, "microphone") || *cl.Video.CanSubscribe || slices.Contains(apitest.List(join["sources"]), any("microphone")) {
