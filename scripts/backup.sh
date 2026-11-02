@@ -10,7 +10,8 @@
 # scripts/restore.sh. docs/adr/0022-metrics-backups.md
 set -eu
 cd "$(dirname "$0")/.."
-COMPOSE="docker compose --env-file .env -f deploy/docker-compose.yml"
+# The test server sets RUSCORD_COMPOSE to its stack (make staging-backup).
+COMPOSE="${RUSCORD_COMPOSE:-docker compose --env-file .env -f deploy/docker-compose.yml}"
 root="${1:-backups}"
 keep="${RUSCORD_BACKUP_KEEP:-7}"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"

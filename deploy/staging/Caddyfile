@@ -1,0 +1,8 @@
+# HTTPS in front of the client's nginx (deploy/staging/compose.yml). Caddy
+# gets and renews the Let's Encrypt certificate for the domain itself; for
+# "localhost" (CI) it uses its own local certificate authority.
+{$RUSCORD_DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy web:80
+}

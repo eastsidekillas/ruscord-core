@@ -9,7 +9,8 @@
 # without touching anything; files are not uploaded then.
 set -eu
 cd "$(dirname "$0")/.."
-COMPOSE="docker compose --env-file .env -f deploy/docker-compose.yml"
+# The test server sets RUSCORD_COMPOSE to its stack (make staging-backup).
+COMPOSE="${RUSCORD_COMPOSE:-docker compose --env-file .env -f deploy/docker-compose.yml}"
 dump_dir="${1:?usage: scripts/restore.sh <backup dir> [database]}"
 db="${2:-ruscord}"
 root="$(dirname "$dump_dir")"
