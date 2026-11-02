@@ -294,7 +294,7 @@ nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
 
 | Метод и путь | Тело | Ответ | Ошибки |
 |---|---|---|---|
-| `POST /channels/{id}/voice` | — | 200, `{url, token, room, sources, push_to_talk}` | 400 `not_voice_channel`, 403 (нет `CONNECT`), 404, 409 `channel_full`, 429 |
+| `POST /channels/{id}/voice` | — | 200, `{url, token, room, sources, push_to_talk, high_quality}` | 400 `not_voice_channel`, 403 (нет `CONNECT`), 404, 409 `channel_full`, 429 |
 | `PATCH /channels/{id}/voice` | `{self_mute, self_deaf}` | 200, голосовое состояние | 404, 409 `not_in_voice`, 429 |
 | `PATCH /guilds/{id}/voice-states/{user}` | `{mute?, deaf?}` | 200, голосовое состояние | 403 (нет `MUTE_MEMBERS` / `DEAFEN_MEMBERS` в канале цели), 404 `not_in_voice`, 422, 429 |
 | `DELETE /guilds/{id}/voice-states/{user}` | — | 204 | 403 (нет `MOVE_MEMBERS`), 404 `not_in_voice`, 429 |
@@ -304,7 +304,9 @@ nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
 клиента проксирует). `sources` — что можно публиковать: `microphone`,
 `camera`, `screen_share`, `screen_share_audio`. Токен разрешает только их, и
 LiveKit отклоняет остальное. `push_to_talk` — у пользователя нет
-`USE_VOICE_ACTIVITY`. 20 входов в минуту.
+`USE_VOICE_ACTIVITY`. `high_quality` — есть `STREAM_HQ`: экран можно
+показывать выше 720p; разрешение выбирает клиент, LiveKit его не ограничивает.
+20 входов в минуту.
 
 Голосовое состояние: `{user_id, guild_id, channel_id, self_mute, self_deaf, mute, deaf, user}`,
 `user` — публичный профиль (нет у «вышел»). `mute` и `deaf` поставил
