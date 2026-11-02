@@ -80,6 +80,38 @@ jobs:
           name: e2e-failures
           path: ruscord-fe/e2e/failures/
 
+  # The test server's stack (deploy/staging) with Caddy's HTTPS on
+  # https://localhost, the whole e2e smoke through it, then the check the
+  # server's owner runs after a deploy (docs/deploy-staging.md).
+  staging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: ruscord-core }
+      - uses: actions/checkout@v4
+        with: { repository: eastsidekillas/ruscord-fe, ref: master, path: ruscord-fe }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ruscord-fe/package-lock.json
+      - run: npm ci
+        working-directory: ruscord-fe
+      - run: npx playwright install --with-deps chromium
+        working-directory: ruscord-fe
+      - run: E2E_STAGING=1 ruscord-fe/e2e/ci.sh ruscord-core ruscord-fe
+      - name: the after-deploy check, trusting Caddy's local certificate authority
+        working-directory: ruscord-core
+        run: |
+          docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/staging/compose.yml \
+            --profile app --profile web --profile staging cp caddy:/data/caddy/pki/authorities/local/root.crt caddy-root.crt
+          RUSCORD_CHECK_CACERT=caddy-root.crt ./scripts/staging-check.sh
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-failures
+          path: ruscord-fe/e2e/failures/
+
   compose:
     runs-on: ubuntu-latest
     steps:

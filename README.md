@@ -43,6 +43,11 @@ make up-all    # инфраструктура + ядро + клиент; пер�
 Для разработки клиента удобнее `make up-app` и `npm start` в ruscord-fe:
 клиент на http://localhost:4200 с перезагрузкой при правках.
 
+### Тестовый сервер
+
+Развернуть на VPS с доменом и HTTPS: [docs/deploy-staging.md](docs/deploy-staging.md)
+(`make staging-env`, `make staging-up`, `make staging-check`).
+
 ## Структура
 
 ```

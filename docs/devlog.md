@@ -2,6 +2,36 @@
 
 Новые записи сверху. Формат: что сделали, что узнали, что открыто.
 
+## 2026-11-02 · Тестовый сервер на VPS (ADR-0033)
+
+**Сделано**
+- `deploy/staging/compose.yml` поверх локального стека: Caddy с HTTPS
+  (Let's Encrypt), LiveKit с медиа на 7882/udp и ICE по TCP на 7881,
+  `RUSCORD_ENV=staging`, миграции при старте, перезапуск контейнеров;
+  публичны только 80, 443, 7881/tcp, 7882/udp.
+- `deploy/staging/env.example`, `scripts/gen-env.sh [шаблон]`,
+  `make staging-env|up|down|logs|backup|restore|check`;
+  `scripts/backup.sh` и `restore.sh` принимают стек в `RUSCORD_COMPOSE`.
+- `scripts/staging-check.sh`: сайт, API, LiveKit через HTTPS, готовность
+  ядра, опубликованные медиапорты.
+- Инструкция docs/deploy-staging.md: VPS, DNS, Docker, файрвол, swap,
+  запуск, обновление, бэкапы по cron, что делать, если не работает.
+- CI `staging`: поднимает этот стек с HTTPS на `https://localhost`
+  (локальный центр сертификации Caddy), прогоняет весь e2e через него и
+  `staging-check.sh`. В ruscord-fe `e2e/ci.sh` получил режим `E2E_STAGING`.
+
+**Узнали**
+- В LiveKit `rtc.udp_port` позволяет держать медиа на одном UDP-порту и
+  оставить LiveKit в сети Compose; TURN требует TLS-сертификат на свой
+  домен, поэтому он пока выключен.
+
+**Открыто**
+- TURN/TLS для сетей, где открыт только 443.
+- Регистрация открыта всем, кто знает адрес.
+- Нужны от владельца: VPS, домен с A-записью на его IP.
+- A27: публичный IP через STUN и одного UDP-порта хватает — проверить на
+  сервере.
+
 ## 2026-11-02 · Звонки в личках и группах, 6c (ADR-0032)
 
 **Сделано**

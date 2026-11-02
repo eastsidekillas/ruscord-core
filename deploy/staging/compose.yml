@@ -1,0 +1,87 @@
+# Test server (staging) on one VPS: layered over the local stack,
+#   docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/staging/compose.yml \
+#     --profile app --profile web --profile staging up -d --build
+# (make staging-up). What differs and why: docs/adr/0033-staging.md,
+# step by step: docs/deploy-staging.md.
+#
+# Public: Caddy on 80/443 (HTTPS by Let's Encrypt) in front of the client's
+# nginx, which proxies /api, /gateway, /cdn and /livekit to the core and
+# LiveKit; LiveKit media on 7882/udp and 7881/tcp. Everything else stays on
+# 127.0.0.1 or inside the compose network.
+name: ruscord
+
+services:
+  livekit:
+    environment:
+      LIVEKIT_KEYS: "${RUSCORD_LIVEKIT_API_KEY:?set in .env}: ${RUSCORD_LIVEKIT_API_SECRET:?set in .env}"
+      # Media through one UDP port (rtc.udp_port), so LiveKit stays on the
+      # compose network where nginx and the core reach it by name. The
+      # public IP comes from STUN unless RUSCORD_LIVEKIT_NODE_IP sets it.
+      # TURN is off: LiveKit's TURN wants a TLS certificate for its own
+      # domain (ADR-0033).
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: ${RUSCORD_LIVEKIT_EXTERNAL_IP:-true}
+          node_ip: ${RUSCORD_LIVEKIT_NODE_IP:-}
+        room:
+          empty_timeout: 30
+          max_participants: 50
+        logging:
+          level: info
+        webhook:
+          api_key: ${RUSCORD_LIVEKIT_API_KEY}
+          urls:
+            - http://core:8080/livekit/webhook
+    ports: !override
+      - "7881:7881"          # ICE over TCP, when UDP does not get through
+      - "7882:7882/udp"      # media
+    restart: unless-stopped
+
+  app:
+    environment:
+      RUSCORD_ENV: staging
+      RUSCORD_LOG_LEVEL: info
+      RUSCORD_ALLOWED_ORIGINS: https://${RUSCORD_DOMAIN:?set RUSCORD_DOMAIN in .env}
+      # One node: migrations run on start (ADR-0033).
+      RUSCORD_AUTO_MIGRATE: "true"
+    restart: unless-stopped
+
+  web:
+    restart: unless-stopped
+
+  postgres:
+    restart: unless-stopped
+  valkey:
+    restart: unless-stopped
+  nats:
+    restart: unless-stopped
+  seaweedfs:
+    restart: unless-stopped
+
+  caddy:
+    # HTTPS for the site: Caddy gets and renews the Let's Encrypt
+    # certificate for RUSCORD_DOMAIN by itself and proxies to the client's
+    # nginx (websockets included).
+    profiles: ["staging"]
+    image: caddy:2.10.0-alpine
+    environment:
+      RUSCORD_DOMAIN: ${RUSCORD_DOMAIN:?set RUSCORD_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"        # HTTP/3
+    volumes:
+      # Relative to deploy/, the folder of the first compose file.
+      - ./staging/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web: { condition: service_started }
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
