@@ -1,7 +1,9 @@
 # Тестовый сервер на VPS
 
 Как поднять ruscord на одном VPS для проверки с друзьями: сайт по HTTPS,
-голос, видео и показ экрана. Почему устроено так — ADR-0033.
+голос, видео и показ экрана. По умолчанию медиа обслуживает self-hosted
+LiveKit; альтернативно можно подключить LiveKit Cloud. Почему устроен staging
+стек — ADR-0033, выбор LiveKit — ADR-0034.
 
 ## Что получится
 
@@ -105,6 +107,57 @@ make staging-check        # сайт, API, LiveKit и порты
 
 Логи: `make staging-logs`. Остановить: `make staging-down` (данные
 останутся в томах Docker).
+
+## Переключение LiveKit
+
+### Использовать LiveKit Cloud
+
+В `.env` установите:
+
+```dotenv
+RUSCORD_LIVEKIT_MODE=cloud
+RUSCORD_LIVEKIT_URL=wss://<project>.livekit.cloud
+RUSCORD_LIVEKIT_PUBLIC_URL=
+RUSCORD_LIVEKIT_API_KEY=<Cloud API key>
+RUSCORD_LIVEKIT_API_SECRET=<Cloud API secret>
+```
+
+`RUSCORD_LIVEKIT_PUBLIC_URL` можно оставить пустым: Core и frontend возьмут
+`RUSCORD_LIVEKIT_URL`. URL должен быть `wss://` origin без path. Cloud URL и
+credentials выдаёт страница проекта LiveKit Cloud. API secret остаётся только
+в окружении Core; он не передаётся браузеру или frontend container.
+
+В LiveKit Cloud откройте **Settings → Webhooks → Create new webhook**. Укажите
+URL `https://<RUSCORD_DOMAIN>/livekit/webhook`, выберите API key, который
+соответствует `RUSCORD_LIVEKIT_API_KEY`, и сохраните. Проверенный маршрут:
+Caddy направляет этот путь напрямую в Core `/livekit/webhook`; клиентский nginx
+не участвует. Отправьте **Actions → Send a test event** и убедитесь, что Cloud
+получил HTTP 200. Для production proxy настройте такой же публичный HTTPS
+маршрут на Core: порт Core напрямую наружу не публикуется.
+
+Примените конфигурацию:
+
+```sh
+make staging-up
+make staging-check
+```
+
+При `cloud` профиль локального LiveKit не активируется, локальные медиапорты
+не нужны. `make staging-check` проверит сайт и Core, а локальные проверки
+LiveKit и портов пропустит.
+
+### Вернуться на локальный LiveKit
+
+```dotenv
+RUSCORD_LIVEKIT_MODE=local
+RUSCORD_LIVEKIT_URL=
+RUSCORD_LIVEKIT_PUBLIC_URL=
+```
+
+В staging также верните local API key и secret либо создайте новый `.env` через
+`make staging-env`, если его ещё нет. Выполните `make staging-up`: Compose
+включит локальный LiveKit, а Caddy по-прежнему направит webhook в Core.
+Активные Cloud-комнаты не мигрируют; участникам потребуется подключиться снова.
 
 ## 5. Обновление
 

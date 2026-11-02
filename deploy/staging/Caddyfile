@@ -4,5 +4,10 @@
 {$RUSCORD_DOMAIN} {
 	encode zstd gzip
 	header Strict-Transport-Security "max-age=31536000"
-	reverse_proxy web:80
+	handle /livekit/webhook {
+		reverse_proxy core:8080
+	}
+	handle {
+		reverse_proxy web:80
+	}
 }

@@ -28,8 +28,9 @@
 ## Решение
 
 1. **Один VPS, Docker Compose.** `deploy/staging/compose.yml` накладывается
-   поверх локального стека и меняет только то, что отличается. Команды —
-   `make staging-*`, инструкция — docs/deploy-staging.md.
+   поверх общего стека; local-only LiveKit настройки подключаются отдельными
+   overlay файлами, когда выбран local mode. Команды — `make staging-*`,
+   инструкция — docs/deploy-staging.md.
 2. **HTTPS — Caddy** перед nginx клиента. Он сам получает и продлевает
    сертификат Let's Encrypt. Для `localhost` (CI) использует свой
    локальный центр сертификации.

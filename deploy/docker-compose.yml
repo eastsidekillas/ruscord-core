@@ -1,4 +1,6 @@
-# Local development stack. Everything binds to 127.0.0.1 only.
+# Shared local/Cloud services. The local LiveKit service is in
+# deploy/local-livekit.yml and Make includes it only for local mode.
+# Everything published here binds to 127.0.0.1 only.
 #   make up        – start infrastructure
 #   make up-app    – infrastructure + the ruscord binary in a container
 #   make up-all    – all of it + the web client (../../ruscord-fe) on http://localhost:8081
@@ -51,52 +53,17 @@ services:
     ports: ["127.0.0.1:8333:8333"]   # S3 API only
     volumes: ["seaweedfs:/data"]
 
-  livekit:
-    image: livekit/livekit-server:v1.13.10
-    environment:
-      # "<key>: <secret>" pairs; the secret must be 32+ characters.
-      LIVEKIT_KEYS: "${RUSCORD_LIVEKIT_API_KEY:?set in .env}: ${RUSCORD_LIVEKIT_API_SECRET:?set in .env}"
-      # The whole config, local development only; production differs in
-      # TURN, TLS and host networking (docs/architecture.md#livekit-production).
-      # Webhooks go to the core in this compose network; for a core run on
-      # the host (make run) set RUSCORD_LIVEKIT_WEBHOOK_URL — until they
-      # arrive, the core's 30-second check against LiveKit keeps up.
-      LIVEKIT_CONFIG: |
-        port: 7880
-        rtc:
-          tcp_port: 7881
-          port_range_start: 50000
-          port_range_end: 50100
-          node_ip: ${RUSCORD_LIVEKIT_NODE_IP:-127.0.0.1}
-          use_external_ip: false
-        room:
-          empty_timeout: 30
-          max_participants: 50
-        logging:
-          level: info
-        webhook:
-          api_key: ${RUSCORD_LIVEKIT_API_KEY}
-          urls:
-            - ${RUSCORD_LIVEKIT_WEBHOOK_URL:-http://core:8080/livekit/webhook}
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    ports:
-      # Media goes to node_ip. A browser that sends from another interface
-      # cannot reach 127.0.0.1 (seen in Linux CI): there RUSCORD_LIVEKIT_NODE_IP
-      # is the machine's own address and the media ports listen on it.
-      - "127.0.0.1:7880:7880"           # signaling / API
-      - "${RUSCORD_LIVEKIT_NODE_IP:-127.0.0.1}:7881:7881"           # ICE over TCP
-      - "${RUSCORD_LIVEKIT_NODE_IP:-127.0.0.1}:50000-50100:50000-50100/udp"   # media; small range is enough locally
-
   app:
     profiles: ["app"]
     build: { context: .., dockerfile: deploy/Dockerfile }
     env_file: [../.env]
     environment:
       RUSCORD_HTTP_ADDR: 0.0.0.0:8080
+      RUSCORD_LIVEKIT_MODE: ${RUSCORD_LIVEKIT_MODE:-local}
+      RUSCORD_LIVEKIT_URL: ${RUSCORD_LIVEKIT_URL:-}
       RUSCORD_POSTGRES_URL: postgres://ruscord:${RUSCORD_PG_PASSWORD}@postgres:5432/ruscord?sslmode=disable
       RUSCORD_REDIS_ADDR: valkey:6379
       RUSCORD_NATS_URL: nats://nats:4222
-      RUSCORD_LIVEKIT_URL: ws://livekit:7880
       RUSCORD_S3_ENDPOINT: http://seaweedfs:8333
       RUSCORD_METRICS_ADDR: 0.0.0.0:9090
       # The client from `ng serve` (4200) and the web container (8081).
@@ -121,6 +88,9 @@ services:
     # to ruscord-core; RUSCORD_FE_DIR overrides the path.
     profiles: ["web"]
     build: { context: "${RUSCORD_FE_DIR:-../../ruscord-fe}" }
+    environment:
+      # Public endpoint only; API credentials must never reach the frontend.
+      RUSCORD_LIVEKIT_PUBLIC_URL: ${RUSCORD_LIVEKIT_PUBLIC_URL:-${RUSCORD_LIVEKIT_URL:-}}
     ports: ["127.0.0.1:8081:80"]
     depends_on:
       app: { condition: service_started }

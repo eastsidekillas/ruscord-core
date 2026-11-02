@@ -28,6 +28,49 @@ func TestLoadDefaultsInDev(t *testing.T) {
 	if !strings.HasPrefix(c.HTTPAddr, "127.0.0.1:") {
 		t.Errorf("dev must listen on loopback by default, got %q", c.HTTPAddr)
 	}
+	if c.LiveKitMode != "local" || c.LiveKitURL != "ws://127.0.0.1:7880" || c.LiveKitPublicURL != "" {
+		t.Errorf("local LiveKit defaults changed: mode=%q server=%q public=%q", c.LiveKitMode, c.LiveKitURL, c.LiveKitPublicURL)
+	}
+}
+
+func TestLoadLiveKitCloud(t *testing.T) {
+	c, err := load(env(map[string]string{
+		"RUSCORD_LIVEKIT_MODE":       "cloud",
+		"RUSCORD_LIVEKIT_URL":        "wss://example.livekit.cloud",
+		"RUSCORD_LIVEKIT_API_KEY":    "key",
+		"RUSCORD_LIVEKIT_API_SECRET": strings.Repeat("s", 32),
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.LiveKitURL != "wss://example.livekit.cloud" || c.LiveKitPublicURL != "wss://example.livekit.cloud" {
+		t.Fatalf("cloud URLs = server %q, public %q", c.LiveKitURL, c.LiveKitPublicURL)
+	}
+}
+
+func TestLoadLiveKitCloudRejectsInvalidConfiguration(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{name: "unknown mode", env: map[string]string{"RUSCORD_LIVEKIT_MODE": "remote"}, want: "RUSCORD_LIVEKIT_MODE"},
+		{name: "missing cloud URL", env: map[string]string{"RUSCORD_LIVEKIT_MODE": "cloud"}, want: "RUSCORD_LIVEKIT_URL"},
+		{name: "non websocket URL", env: map[string]string{"RUSCORD_LIVEKIT_MODE": "cloud", "RUSCORD_LIVEKIT_URL": "https://example.livekit.cloud", "RUSCORD_LIVEKIT_API_KEY": "key", "RUSCORD_LIVEKIT_API_SECRET": strings.Repeat("s", 32)}, want: "RUSCORD_LIVEKIT_URL"},
+		{name: "insecure cloud URL", env: map[string]string{"RUSCORD_LIVEKIT_MODE": "cloud", "RUSCORD_LIVEKIT_URL": "ws://example.livekit.cloud", "RUSCORD_LIVEKIT_API_KEY": "key", "RUSCORD_LIVEKIT_API_SECRET": strings.Repeat("s", 32)}, want: "wss://"},
+		{name: "missing key", env: map[string]string{"RUSCORD_LIVEKIT_MODE": "cloud", "RUSCORD_LIVEKIT_URL": "wss://example.livekit.cloud", "RUSCORD_LIVEKIT_API_SECRET": strings.Repeat("s", 32)}, want: "RUSCORD_LIVEKIT_API_KEY"},
+		{name: "missing secret", env: map[string]string{"RUSCORD_LIVEKIT_MODE": "cloud", "RUSCORD_LIVEKIT_URL": "wss://example.livekit.cloud", "RUSCORD_LIVEKIT_API_KEY": "key"}, want: "RUSCORD_LIVEKIT_API_SECRET"},
+		{name: "short cloud secret", env: map[string]string{"RUSCORD_LIVEKIT_MODE": "cloud", "RUSCORD_LIVEKIT_URL": "wss://example.livekit.cloud", "RUSCORD_LIVEKIT_API_KEY": "key", "RUSCORD_LIVEKIT_API_SECRET": "short"}, want: "at least 32"},
+		{name: "invalid public URL", env: map[string]string{"RUSCORD_LIVEKIT_MODE": "cloud", "RUSCORD_LIVEKIT_URL": "wss://example.livekit.cloud", "RUSCORD_LIVEKIT_PUBLIC_URL": "https://public.example", "RUSCORD_LIVEKIT_API_KEY": "key", "RUSCORD_LIVEKIT_API_SECRET": strings.Repeat("s", 32)}, want: "RUSCORD_LIVEKIT_PUBLIC_URL"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := load(env(tt.env))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want mention of %s", err, tt.want)
+			}
+		})
+	}
 }
 
 func TestLoadRoles(t *testing.T) {

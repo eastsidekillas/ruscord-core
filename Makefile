@@ -1,6 +1,9 @@
-COMPOSE := docker compose --env-file .env -f deploy/docker-compose.yml
+LIVEKIT_MODE := $(or $(shell sed -n 's/^RUSCORD_LIVEKIT_MODE=//p' .env 2>/dev/null | tail -1),local)
+LIVEKIT_LOCAL_COMPOSE := $(if $(filter cloud,$(LIVEKIT_MODE)),,-f deploy/local-livekit.yml --profile local)
+LIVEKIT_STAGING_COMPOSE := $(if $(filter cloud,$(LIVEKIT_MODE)),,-f deploy/staging/local-livekit.yml)
+COMPOSE := docker compose --env-file .env -f deploy/docker-compose.yml $(LIVEKIT_LOCAL_COMPOSE)
 # The test server (docs/deploy-staging.md): the same stack with deploy/staging on top.
-STAGING := $(COMPOSE) -f deploy/staging/compose.yml --profile app --profile web --profile staging
+STAGING := $(COMPOSE) -f deploy/staging/compose.yml $(LIVEKIT_STAGING_COMPOSE) --profile app --profile web --profile staging
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: run build test lint test-docker up up-app up-all down logs env backup staging-env staging-up staging-down staging-logs staging-backup staging-restore staging-check

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -46,6 +47,7 @@ type Config struct {
 	S3SecretKey string
 
 	LiveKitURL       string
+	LiveKitMode      string
 	LiveKitAPIKey    string
 	LiveKitAPISecret string
 	// LiveKitPublicURL is the LiveKit address browsers connect to; empty
@@ -90,6 +92,9 @@ func load(getenv func(string) string) (Config, error) {
 		return def
 	}
 
+	liveKitMode := get("RUSCORD_LIVEKIT_MODE", "local")
+	liveKitURL := get("RUSCORD_LIVEKIT_URL", "ws://127.0.0.1:7880")
+	liveKitPublicURL := strings.TrimSpace(getenv("RUSCORD_LIVEKIT_PUBLIC_URL"))
 	c := Config{
 		Env:              get("RUSCORD_ENV", "dev"),
 		HTTPAddr:         get("RUSCORD_HTTP_ADDR", "127.0.0.1:8080"),
@@ -103,14 +108,49 @@ func load(getenv func(string) string) (Config, error) {
 		S3Bucket:         get("RUSCORD_S3_BUCKET", "ruscord"),
 		S3AccessKey:      get("RUSCORD_S3_ACCESS_KEY", ""),
 		S3SecretKey:      get("RUSCORD_S3_SECRET_KEY", ""),
-		LiveKitURL:       get("RUSCORD_LIVEKIT_URL", "ws://127.0.0.1:7880"),
+		LiveKitMode:      liveKitMode,
+		LiveKitURL:       liveKitURL,
 		MetricsAddr:      get("RUSCORD_METRICS_ADDR", "127.0.0.1:9090"),
 		LiveKitAPIKey:    get("RUSCORD_LIVEKIT_API_KEY", ""),
 		LiveKitAPISecret: get("RUSCORD_LIVEKIT_API_SECRET", ""),
-		LiveKitPublicURL: get("RUSCORD_LIVEKIT_PUBLIC_URL", ""),
+		LiveKitPublicURL: liveKitPublicURL,
 	}
 
 	var errs []error
+
+	switch c.LiveKitMode {
+	case "local", "cloud":
+	default:
+		errs = append(errs, fmt.Errorf("RUSCORD_LIVEKIT_MODE: unknown value %q (want local or cloud)", c.LiveKitMode))
+	}
+	if c.LiveKitMode == "cloud" {
+		if strings.TrimSpace(getenv("RUSCORD_LIVEKIT_URL")) == "" {
+			errs = append(errs, errors.New("RUSCORD_LIVEKIT_URL: required in cloud mode"))
+		}
+		if c.LiveKitAPIKey == "" {
+			errs = append(errs, errors.New("RUSCORD_LIVEKIT_API_KEY: required in cloud mode"))
+		}
+		if c.LiveKitAPISecret == "" {
+			errs = append(errs, errors.New("RUSCORD_LIVEKIT_API_SECRET: required in cloud mode"))
+		}
+		if c.LiveKitPublicURL == "" {
+			c.LiveKitPublicURL = c.LiveKitURL
+		}
+	}
+	if c.LiveKitMode == "cloud" || strings.TrimSpace(getenv("RUSCORD_LIVEKIT_PUBLIC_URL")) != "" {
+		if err := validateLiveKitWebSocketURL("RUSCORD_LIVEKIT_URL", c.LiveKitURL); err != nil {
+			errs = append(errs, err)
+		} else if c.LiveKitMode == "cloud" && !strings.HasPrefix(c.LiveKitURL, "wss://") {
+			errs = append(errs, errors.New("RUSCORD_LIVEKIT_URL: cloud mode requires wss://"))
+		}
+		if c.LiveKitPublicURL != "" {
+			if err := validateLiveKitWebSocketURL("RUSCORD_LIVEKIT_PUBLIC_URL", c.LiveKitPublicURL); err != nil {
+				errs = append(errs, err)
+			} else if c.LiveKitMode == "cloud" && !strings.HasPrefix(c.LiveKitPublicURL, "wss://") {
+				errs = append(errs, errors.New("RUSCORD_LIVEKIT_PUBLIC_URL: cloud mode requires wss://"))
+			}
+		}
+	}
 
 	if seed := get("RUSCORD_JWT_ED25519_SEED", ""); seed != "" {
 		b, err := hex.DecodeString(seed)
@@ -173,9 +213,9 @@ func load(getenv func(string) string) (Config, error) {
 				errs = append(errs, fmt.Errorf("%s: required outside dev", key))
 			}
 		}
-		if len(c.LiveKitAPISecret) > 0 && len(c.LiveKitAPISecret) < 32 {
-			errs = append(errs, errors.New("RUSCORD_LIVEKIT_API_SECRET: must be at least 32 characters"))
-		}
+	}
+	if len(c.LiveKitAPISecret) > 0 && len(c.LiveKitAPISecret) < 32 && (!c.IsDev() || c.LiveKitMode == "cloud") {
+		errs = append(errs, errors.New("RUSCORD_LIVEKIT_API_SECRET: must be at least 32 characters"))
 	}
 
 	if (c.S3AccessKey == "") != (c.S3SecretKey == "") {
@@ -183,6 +223,14 @@ func load(getenv func(string) string) (Config, error) {
 	}
 
 	return c, errors.Join(errs...)
+}
+
+func validateLiveKitWebSocketURL(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Hostname() == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s: must be a ws:// or wss:// origin with a host and no credentials, path, query or fragment", name)
+	}
+	return nil
 }
 
 // FilesEnabled reports whether S3 credentials are configured.

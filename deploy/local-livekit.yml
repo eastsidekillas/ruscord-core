@@ -1,0 +1,41 @@
+# Local-mode overrides. Make includes this file only when .env selects local.
+# This keeps legacy .env files (which may contain ws://127.0.0.1:7880) working
+# inside the Core container and avoids any local LiveKit URL in Cloud mode.
+name: ruscord
+
+services:
+  livekit:
+    profiles: ["local"]
+    image: livekit/livekit-server:v1.13.10
+    environment:
+      LIVEKIT_KEYS: "${RUSCORD_LIVEKIT_API_KEY:?set in .env}: ${RUSCORD_LIVEKIT_API_SECRET:?set in .env}"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          port_range_start: 50000
+          port_range_end: 50100
+          node_ip: ${RUSCORD_LIVEKIT_NODE_IP:-127.0.0.1}
+          use_external_ip: false
+        room:
+          empty_timeout: 30
+          max_participants: 50
+        logging:
+          level: info
+        webhook:
+          api_key: ${RUSCORD_LIVEKIT_API_KEY}
+          urls:
+            - ${RUSCORD_LIVEKIT_WEBHOOK_URL:-http://core:8080/livekit/webhook}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports:
+      - "127.0.0.1:7880:7880"           # signaling / API
+      - "${RUSCORD_LIVEKIT_NODE_IP:-127.0.0.1}:7881:7881"           # ICE over TCP
+      - "${RUSCORD_LIVEKIT_NODE_IP:-127.0.0.1}:50000-50100:50000-50100/udp"   # media
+
+  app:
+    environment:
+      RUSCORD_LIVEKIT_URL: ws://livekit:7880
+
+  web:
+    environment:
+      RUSCORD_LIVEKIT_PUBLIC_URL: ${RUSCORD_LIVEKIT_PUBLIC_URL:-}

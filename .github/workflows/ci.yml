@@ -103,8 +103,8 @@ jobs:
       - name: the after-deploy check, trusting Caddy's local certificate authority
         working-directory: ruscord-core
         run: |
-          docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/staging/compose.yml \
-            --profile app --profile web --profile staging cp caddy:/data/caddy/pki/authorities/local/root.crt caddy-root.crt
+          docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/local-livekit.yml -f deploy/staging/compose.yml -f deploy/staging/local-livekit.yml \
+            --profile local --profile app --profile web --profile staging cp caddy:/data/caddy/pki/authorities/local/root.crt caddy-root.crt
           RUSCORD_CHECK_CACERT=caddy-root.crt ./scripts/staging-check.sh
       - if: failure()
         uses: actions/upload-artifact@v4
@@ -119,17 +119,17 @@ jobs:
       - name: generate .env
         run: ./scripts/gen-env.sh > .env
       - name: validate compose file
-        run: docker compose --env-file .env -f deploy/docker-compose.yml --profile app config --quiet
+        run: docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/local-livekit.yml --profile local --profile app config --quiet
       - name: start stack and check readiness
         run: |
-          docker compose --env-file .env -f deploy/docker-compose.yml --profile app up -d --build --wait --wait-timeout 180 postgres valkey
-          docker compose --env-file .env -f deploy/docker-compose.yml --profile app up -d --build nats livekit seaweedfs app
+          docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/local-livekit.yml --profile local --profile app up -d --build --wait --wait-timeout 180 postgres valkey
+          docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/local-livekit.yml --profile local --profile app up -d --build nats livekit seaweedfs app
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8080/readyz; then ready=1; break; fi
             sleep 2
           done
           if [ -z "${ready:-}" ]; then
-            docker compose --env-file .env -f deploy/docker-compose.yml --profile app logs
+            docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/local-livekit.yml --profile local --profile app logs
             exit 1
           fi
       - name: register, create a guild and join it by invite through the running stack

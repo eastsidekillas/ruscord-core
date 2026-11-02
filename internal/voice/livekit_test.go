@@ -263,3 +263,10 @@ func TestRoomService(t *testing.T) {
 		t.Fatalf("a bad token must fail loudly: %v", err)
 	}
 }
+
+func TestNewLiveKitCloudURLUsesHTTPSForServerAPI(t *testing.T) {
+	lk := NewLiveKit("wss://project.livekit.cloud", testKey, testSecret)
+	if lk.api != "https://project.livekit.cloud" {
+		t.Fatalf("Cloud server API URL = %q, want https:// origin", lk.api)
+	}
+}
