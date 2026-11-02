@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/apitest"
 )
@@ -162,4 +163,56 @@ func TestReconcileEnforces(t *testing.T) {
 	if p := e.permOf("voice:"+voice, bob); slices.Contains(p.CanPublishSources, "MICROPHONE") {
 		t.Fatalf("the check did not apply the lost SPEAK: %+v", p)
 	}
+}
+
+// Moving someone to another voice channel (docs/adr/0031-voice-move.md):
+// MOVE_MEMBERS in both channels and CONNECT in the new one for the
+// moderator; the member must be able to enter it themself.
+func TestMove(t *testing.T) {
+	e := newEnv(t)
+	owner, bob, eve := e.User("owner"), e.User("bob"), e.User("eve")
+	gid, text, voice := newGuild(owner)
+	for _, u := range []*apitest.User{bob, eve} {
+		if _, err := e.guilds.AddMember(t.Context(), uuid.MustParse(gid), u.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := apitest.Str(apitest.Obj(owner.Expect(http.StatusCreated, "POST", "/api/v1/guilds/"+gid+"/channels",
+		map[string]any{"type": 2, "name": "Вторая"}))["id"])
+	e.inRoom(bob, voice)
+	e.inRoom(eve, voice)
+	move := func(actor, target *apitest.User, to string, status int) {
+		t.Helper()
+		actor.Expect(status, "POST", "/api/v1/guilds/"+gid+"/voice-states/"+target.ID.String()+"/move", map[string]any{"channel_id": to})
+	}
+
+	move(bob, eve, other, http.StatusForbidden)    // no MOVE_MEMBERS
+	move(owner, eve, voice, http.StatusConflict)   // already there
+	move(owner, eve, text, http.StatusBadRequest)  // not a voice channel
+	move(owner, owner, other, http.StatusNotFound) // the owner is not in voice
+	owner.Expect(http.StatusUnprocessableEntity, "POST", "/api/v1/guilds/"+gid+"/voice-states/"+eve.ID.String()+"/move", map[string]any{})
+
+	// Eve may not connect to the other channel: she cannot be moved there.
+	owner.Expect(http.StatusOK, "PUT", "/api/v1/channels/"+other+"/permissions/"+eve.ID.String(),
+		map[string]any{"type": 2, "deny": permStr(perm.Connect)})
+	move(owner, eve, other, http.StatusConflict)
+	owner.Expect(http.StatusNoContent, "DELETE", "/api/v1/channels/"+other+"/permissions/"+eve.ID.String(), nil)
+
+	// Bob goes: told on his own topic, out of the old room at once.
+	move(owner, bob, other, http.StatusNoContent)
+	evs := e.Outbox(events.VoiceMove)
+	if len(evs) != 1 || evs[0].Topic != events.UserTopic(bob.ID) || evs[0].Data["channel_id"] != other || evs[0].Data["from_channel_id"] != voice {
+		t.Fatalf("move events %+v", evs)
+	}
+	if e.permOf("voice:"+voice, bob) != nil {
+		t.Fatal("bob stays in the old room")
+	}
+	if st := e.states(owner, gid); len(st) != 1 || apitest.Obj(st[0])["user_id"] != eve.ID.String() {
+		t.Fatalf("voice states after the move %v", st)
+	}
+
+	// The other channel is full now: eve cannot follow.
+	e.inRoom(bob, other)
+	owner.Expect(http.StatusOK, "PATCH", "/api/v1/channels/"+other, map[string]any{"user_limit": 1})
+	move(owner, eve, other, http.StatusConflict)
 }

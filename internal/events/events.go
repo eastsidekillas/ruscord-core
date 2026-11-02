@@ -54,6 +54,11 @@ const (
 	// channel_id means left). Written under the guild lock, like the rest
 	// of the guild's state (docs/adr/0025-voice.md).
 	VoiceStateUpdate = "VOICE_STATE_UPDATE"
+	// VoiceMove goes to the user topic when a moderator moves the user to
+	// another voice channel (guild.VoiceMoveEvent): the client that is in
+	// the old channel joins the new one with a token of its own; LiveKit
+	// cannot move a participant between rooms (docs/adr/0031-voice-move.md).
+	VoiceMove = "VOICE_MOVE"
 
 	// SessionRevoke goes to the user topic when a sign-in session is revoked
 	// (logout, refresh-token reuse, signed out from another device). The

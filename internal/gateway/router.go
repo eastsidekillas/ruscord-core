@@ -266,6 +266,9 @@ func (r *router) userEvent(ctx context.Context, ev event) (routed, error) {
 		}
 		return forward(ev), nil // another device of mine signed out
 
+	case events.VoiceMove:
+		return forward(ev), nil
+
 	case events.SessionCreate:
 		var p idPayload
 		if json.Unmarshal(ev.Data, &p) != nil || p.ID == r.authSession {
