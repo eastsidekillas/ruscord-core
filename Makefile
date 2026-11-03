@@ -1,4 +1,6 @@
-COMPOSE := docker compose --env-file .env -f deploy/docker-compose.yml
+# LiveKit Cloud instead of the local LiveKit when .env says so (docs/adr/0034-livekit-cloud.md).
+LIVEKIT_MODE := $(shell sed -n 's/^RUSCORD_LIVEKIT_MODE=//p' .env 2>/dev/null)
+COMPOSE := docker compose --env-file .env -f deploy/docker-compose.yml $(if $(filter cloud,$(LIVEKIT_MODE)),-f deploy/livekit-cloud.yml)
 # The test server (docs/deploy-staging.md): the same stack with deploy/staging on top.
 STAGING := $(COMPOSE) -f deploy/staging/compose.yml --profile app --profile web --profile staging
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)

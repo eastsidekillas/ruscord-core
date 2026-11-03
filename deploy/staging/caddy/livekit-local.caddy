@@ -1,0 +1,2 @@
+# The local LiveKit posts its webhooks to the core inside the compose
+# network; nothing of it is opened here (ADR-0025).

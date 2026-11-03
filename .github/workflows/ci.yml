@@ -120,6 +120,20 @@ jobs:
         run: ./scripts/gen-env.sh > .env
       - name: validate compose file
         run: docker compose --env-file .env -f deploy/docker-compose.yml --profile app config --quiet
+      # LiveKit Cloud (ADR-0034) cannot run here without a project; its
+      # configuration is checked: compose with the overlay, Caddy in both modes.
+      - name: validate the LiveKit Cloud configuration
+        run: |
+          cp .env cloud.env
+          printf 'RUSCORD_DOMAIN=localhost\nRUSCORD_LIVEKIT_MODE=cloud\nRUSCORD_LIVEKIT_CLOUD_URL=wss://ci.livekit.cloud\n' >> cloud.env
+          docker compose --env-file cloud.env -f deploy/docker-compose.yml -f deploy/livekit-cloud.yml -f deploy/staging/compose.yml \
+            --profile app --profile web --profile staging config > cloud.yml
+          ! grep -q 'livekit-server' cloud.yml   # the local LiveKit is not part of it
+          grep -q 'RUSCORD_LIVEKIT_PUBLIC_URL: wss://ci.livekit.cloud' cloud.yml
+          for mode in local cloud; do
+            docker run --rm -v "$PWD/deploy/staging/caddy:/etc/caddy:ro" -e RUSCORD_DOMAIN=localhost -e RUSCORD_LIVEKIT_MODE=$mode \
+              caddy:2.10.0-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          done
       - name: start stack and check readiness
         run: |
           docker compose --env-file .env -f deploy/docker-compose.yml --profile app up -d --build --wait --wait-timeout 180 postgres valkey

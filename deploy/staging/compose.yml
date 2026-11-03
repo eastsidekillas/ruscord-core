@@ -69,13 +69,14 @@ services:
     image: caddy:2.10.0-alpine
     environment:
       RUSCORD_DOMAIN: ${RUSCORD_DOMAIN:?set RUSCORD_DOMAIN in .env}
+      RUSCORD_LIVEKIT_MODE: ${RUSCORD_LIVEKIT_MODE:-local}
     ports:
       - "80:80"
       - "443:443"
       - "443:443/udp"        # HTTP/3
     volumes:
       # Relative to deploy/, the folder of the first compose file.
-      - ./staging/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./staging/caddy:/etc/caddy:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

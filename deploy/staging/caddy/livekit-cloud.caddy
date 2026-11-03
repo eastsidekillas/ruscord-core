@@ -1,0 +1,6 @@
+# LiveKit Cloud posts its webhooks from the internet: this one path goes to
+# the core, which accepts only requests signed with our API secret
+# (docs/adr/0034-livekit-cloud.md).
+handle /livekit/webhook {
+	reverse_proxy core:8080
+}
