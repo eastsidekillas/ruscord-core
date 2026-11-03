@@ -4,5 +4,10 @@
 {$RUSCORD_DOMAIN} {
 	encode zstd gzip
 	header Strict-Transport-Security "max-age=31536000"
-	reverse_proxy web:80
+	# What LiveKit needs from outside: nothing for the local one, the
+	# webhook for LiveKit Cloud (docs/adr/0034-livekit-cloud.md).
+	import /etc/caddy/livekit-{$RUSCORD_LIVEKIT_MODE}.caddy
+	handle {
+		reverse_proxy web:80
+	}
 }

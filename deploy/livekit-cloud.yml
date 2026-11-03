@@ -1,0 +1,26 @@
+# LiveKit Cloud instead of the local LiveKit (docs/adr/0034-livekit-cloud.md).
+# The Makefile adds this file when .env has RUSCORD_LIVEKIT_MODE=cloud, to
+# the local stack and the test server alike:
+#   RUSCORD_LIVEKIT_CLOUD_URL    wss://<project>.livekit.cloud
+#   RUSCORD_LIVEKIT_API_KEY      the Cloud project's API key
+#   RUSCORD_LIVEKIT_API_SECRET   its secret
+# and in the Cloud dashboard a webhook to https://<domain>/livekit/webhook
+# signed with that key.
+name: ruscord
+
+services:
+  livekit:
+    # Not started: a profile nobody turns on.
+    profiles: !override ["livekit-local"]
+
+  app:
+    environment:
+      # The core calls the Cloud's server API; browsers connect to it directly.
+      RUSCORD_LIVEKIT_URL: ${RUSCORD_LIVEKIT_CLOUD_URL:?set RUSCORD_LIVEKIT_CLOUD_URL in .env}
+      RUSCORD_LIVEKIT_PUBLIC_URL: ${RUSCORD_LIVEKIT_CLOUD_URL}
+
+  web:
+    environment:
+      # The page may connect to LiveKit Cloud (signalling and its region
+      # list); regions are other subdomains of livekit.cloud.
+      RUSCORD_CSP_CONNECT: https://*.livekit.cloud wss://*.livekit.cloud
