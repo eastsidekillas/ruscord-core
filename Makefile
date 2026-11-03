@@ -5,7 +5,7 @@ COMPOSE := docker compose --env-file .env -f deploy/docker-compose.yml $(if $(fi
 STAGING := $(COMPOSE) -f deploy/staging/compose.yml --profile app --profile web --profile staging
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: run build test lint test-docker up up-app up-all down logs env backup staging-env staging-up staging-down staging-logs staging-backup staging-restore staging-check
+.PHONY: run build test lint test-docker up up-app up-all down logs env backup staging-env staging-up staging-down staging-logs staging-backup staging-restore staging-check staging-update
 
 env: ## create .env with random local secrets (does not overwrite)
 	@if [ -f .env ]; then echo ".env already exists"; else ./scripts/gen-env.sh > .env && echo "wrote .env"; fi
@@ -48,6 +48,9 @@ staging-env: ## the test server's .env with random secrets (does not overwrite);
 
 staging-up: ## build and start the test server's stack (ruscord-fe next to this repo)
 	$(STAGING) up -d --build --remove-orphans
+
+staging-update: ## pull both repos from GitHub, back up, rebuild, check (scripts/staging-update.sh --help)
+	./scripts/staging-update.sh
 
 staging-down:
 	$(STAGING) down
