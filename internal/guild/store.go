@@ -66,7 +66,7 @@ func listRoles(ctx context.Context, q querier, guildID uuid.UUID) ([]Role, error
 // rolesIn returns the roles of each guild, ordered by position.
 func rolesIn(ctx context.Context, q querier, guildIDs []uuid.UUID) (map[uuid.UUID][]Role, error) {
 	rows, err := q.Query(ctx,
-		`SELECT id, guild_id, name, position, permissions, color FROM roles
+		`SELECT id, guild_id, name, position, permissions, color, mentionable FROM roles
 		 WHERE guild_id = ANY($1) ORDER BY guild_id, position, id`, guildIDs)
 	if err != nil {
 		return nil, err
@@ -74,7 +74,7 @@ func rolesIn(ctx context.Context, q querier, guildIDs []uuid.UUID) (map[uuid.UUI
 	roles, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Role, error) {
 		var role Role
 		var p int64
-		err := r.Scan(&role.ID, &role.GuildID, &role.Name, &role.Position, &p, &role.Color)
+		err := r.Scan(&role.ID, &role.GuildID, &role.Name, &role.Position, &p, &role.Color, &role.Mentionable)
 		role.Permissions = perm.Permissions(p) //nolint:gosec // stored from a uint64 with the top bit unused
 		return role, err
 	})

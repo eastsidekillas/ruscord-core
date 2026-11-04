@@ -677,6 +677,7 @@ type RoleInput struct {
 	Permissions *perm.Permissions `json:"permissions"`
 	Color       *int              `json:"color"`
 	Position    *int              `json:"position"`
+	Mentionable *bool             `json:"mentionable"`
 }
 
 func (in RoleInput) validate(creating bool) error {
@@ -714,6 +715,9 @@ func (s *Service) CreateRole(ctx context.Context, userID, guildID uuid.UUID, in 
 	if in.Color != nil {
 		r.Color = *in.Color
 	}
+	if in.Mentionable != nil {
+		r.Mentionable = *in.Mentionable
+	}
 	err := s.mutate(ctx, guildID, userID, func(tx pgx.Tx, a access) error {
 		if len(a.roles) >= maxRolesPerGuild {
 			return errTooManyRoles
@@ -731,8 +735,8 @@ func (s *Service) CreateRole(ctx context.Context, userID, guildID uuid.UUID, in 
 			return err
 		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO roles (id, guild_id, name, position, permissions, color) VALUES ($1, $2, $3, 1, $4, $5)`,
-			r.ID, guildID, r.Name, int64(r.Permissions), r.Color); err != nil { //nolint:gosec // bits fit in 63
+			`INSERT INTO roles (id, guild_id, name, position, permissions, color, mentionable) VALUES ($1, $2, $3, 1, $4, $5, $6)`,
+			r.ID, guildID, r.Name, int64(r.Permissions), r.Color, r.Mentionable); err != nil { //nolint:gosec // bits fit in 63
 			return err
 		}
 		return writeRoles(ctx, tx, guildID, events.RoleCreate, r)
@@ -770,7 +774,8 @@ func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID uuid.U
 		if everyone {
 			// @everyone has no position to assign, so only MANAGE_ROLES and
 			// the no-escalation rule apply.
-			if in.Name != nil || in.Position != nil {
+			// @everyone is pinged with the @everyone text, never as a role.
+			if in.Name != nil || in.Position != nil || in.Mentionable != nil {
 				return errEveryoneEdit
 			}
 			base := a.base()
@@ -791,6 +796,9 @@ func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID uuid.U
 		if in.Color != nil {
 			next.Color = *in.Color
 		}
+		if in.Mentionable != nil {
+			next.Mentionable = *in.Mentionable
+		}
 		if in.Position != nil {
 			next.Position = *in.Position
 			if next.Position < 1 || next.Position > len(a.roles)-1 {
@@ -807,8 +815,8 @@ func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID uuid.U
 			}
 		}
 		if _, err := tx.Exec(ctx,
-			`UPDATE roles SET name = $2, permissions = $3, color = $4, position = $5 WHERE id = $1`,
-			r.ID, next.Name, int64(next.Permissions), next.Color, next.Position); err != nil { //nolint:gosec // bits fit in 63
+			`UPDATE roles SET name = $2, permissions = $3, color = $4, position = $5, mentionable = $6 WHERE id = $1`,
+			r.ID, next.Name, int64(next.Permissions), next.Color, next.Position, next.Mentionable); err != nil { //nolint:gosec // bits fit in 63
 			return err
 		}
 		out = next
