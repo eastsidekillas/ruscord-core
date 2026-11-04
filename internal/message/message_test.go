@@ -69,6 +69,14 @@ func (e *env) count(channelID string) int {
 	return n
 }
 
+// dm makes a and b friends and returns the id of their DM.
+func (e *env) dm(a, b *apitest.User) string {
+	e.T.Helper()
+	a.Expect(http.StatusNoContent, "PUT", "/api/v1/users/@me/relationships/"+b.ID.String(), map[string]any{})
+	b.Expect(http.StatusNoContent, "PUT", "/api/v1/users/@me/relationships/"+a.ID.String(), map[string]any{})
+	return str(obj(a.Expect(http.StatusOK, "POST", "/api/v1/users/@me/channels", map[string]any{"recipient_id": b.ID}))["id"])
+}
+
 func msgs(ch string) string { return "/api/v1/channels/" + ch + "/messages" }
 
 func send(u *apitest.User, ch, content string) map[string]any {
@@ -189,9 +197,7 @@ func TestMessagePermissions(t *testing.T) {
 func TestDirectMessageChannel(t *testing.T) {
 	e := newEnv(t)
 	ann, bob, eve := e.User("ann"), e.User("bob"), e.User("eve")
-	ann.Expect(http.StatusNoContent, "PUT", "/api/v1/users/@me/relationships/"+bob.ID.String(), map[string]any{})
-	bob.Expect(http.StatusNoContent, "PUT", "/api/v1/users/@me/relationships/"+ann.ID.String(), map[string]any{})
-	dm := str(obj(ann.Expect(http.StatusOK, "POST", "/api/v1/users/@me/channels", map[string]any{"recipient_id": bob.ID}))["id"])
+	dm := e.dm(ann, bob)
 
 	m := send(ann, dm, "привет")
 	if _, ok := m["guild_id"]; ok {

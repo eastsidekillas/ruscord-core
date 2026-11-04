@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -33,16 +32,18 @@ const (
 )
 
 var (
-	errNotText    = httpx.NewError(http.StatusBadRequest, "not_text_channel", "Сообщения есть только в текстовых каналах: здесь их нельзя ни читать, ни писать")
-	errNotAuthor  = httpx.NewError(http.StatusForbidden, "forbidden", "Редактировать можно только свои сообщения")
-	errBadReply   = httpx.Validation(map[string]string{"reply_to": "Сообщение не найдено в этом канале"})
-	ruleSend      = ratelimit.Rule{Name: "message_send", Limit: 10, Window: 10 * time.Second}
-	everyoneRegex = regexp.MustCompile(`@(everyone|here)\b`)
+	errNotText   = httpx.NewError(http.StatusBadRequest, "not_text_channel", "Сообщения есть только в текстовых каналах: здесь их нельзя ни читать, ни писать")
+	errNotAuthor = httpx.NewError(http.StatusForbidden, "forbidden", "Редактировать можно только свои сообщения")
+	errBadReply  = httpx.Validation(map[string]string{"reply_to": "Сообщение не найдено в этом канале"})
+	ruleSend     = ratelimit.Rule{Name: "message_send", Limit: 10, Window: 10 * time.Second}
 )
 
 // GuildChannels is what message needs from the guild module.
 type GuildChannels interface {
 	ChannelPermissions(ctx context.Context, userID, channelID uuid.UUID) (uuid.UUID, guild.ChannelType, perm.Permissions, error)
+	// Mentions keeps the users who are members of the guild and the roles
+	// of the guild the author may ping (any role when pingAll).
+	Mentions(ctx context.Context, guildID uuid.UUID, users, roles []uuid.UUID, pingAll bool) ([]uuid.UUID, []uuid.UUID, error)
 }
 
 // DMChannels is what message needs from the social module.
@@ -72,9 +73,14 @@ type Message struct {
 	Content         string           `json:"content"`
 	Nonce           *string          `json:"nonce,omitempty"`
 	ReplyTo         *uuid.UUID       `json:"reply_to,omitempty"`
+	ReplyMention    bool             `json:"-"`
 	MentionEveryone bool             `json:"mention_everyone"`
-	CreatedAt       time.Time        `json:"created_at"`
-	EditedAt        *time.Time       `json:"edited_at,omitempty"`
+	// Mentions and MentionRoles are the users and roles the message pings,
+	// checked when it was sent or last edited (ADR-0035).
+	Mentions     []uuid.UUID `json:"mentions"`
+	MentionRoles []uuid.UUID `json:"mention_roles"`
+	CreatedAt    time.Time   `json:"created_at"`
+	EditedAt     *time.Time  `json:"edited_at,omitempty"`
 }
 
 // channel is a resolved channel: where it lives, what the caller may do in
@@ -86,6 +92,8 @@ type channel struct {
 	topic   string
 	// ephTopic carries ephemeral events (typing) of the channel.
 	ephTopic string
+	// recipients are the members of a DM; empty for guild channels.
+	recipients []uuid.UUID
 }
 
 // resolve finds the channel in the guild module, then in the social module.
@@ -101,19 +109,21 @@ func (s *Service) resolve(ctx context.Context, userID, channelID uuid.UUID) (cha
 	if !errors.Is(err, httpx.ErrNotFound) {
 		return channel{}, err
 	}
-	p, _, err = s.dms.Permissions(ctx, userID, channelID)
+	p, recipients, err := s.dms.Permissions(ctx, userID, channelID)
 	if err != nil {
 		return channel{}, err
 	}
-	return channel{id: channelID, perms: p, topic: events.ChannelTopic(channelID), ephTopic: events.EphChannelTopic(channelID)}, nil
+	return channel{id: channelID, perms: p, topic: events.ChannelTopic(channelID), ephTopic: events.EphChannelTopic(channelID),
+		recipients: recipients}, nil
 }
 
-const msgCols = `id, channel_id, guild_id, author_id, content, nonce, reply_to, mention_everyone, created_at, edited_at`
+const msgCols = `id, channel_id, guild_id, author_id, content, nonce, reply_to, reply_mention, mention_everyone,
+ mentions, mention_roles, created_at, edited_at`
 
 func scanMessage(r pgx.CollectableRow) (Message, error) {
 	var m Message
-	err := r.Scan(&m.ID, &m.ChannelID, &m.GuildID, &m.AuthorID, &m.Content, &m.Nonce, &m.ReplyTo,
-		&m.MentionEveryone, &m.CreatedAt, &m.EditedAt)
+	err := r.Scan(&m.ID, &m.ChannelID, &m.GuildID, &m.AuthorID, &m.Content, &m.Nonce, &m.ReplyTo, &m.ReplyMention,
+		&m.MentionEveryone, &m.Mentions, &m.MentionRoles, &m.CreatedAt, &m.EditedAt)
 	return m, err
 }
 
@@ -148,23 +158,44 @@ func (s *Service) withAuthor(ctx context.Context, m Message) (Message, error) {
 	return ms[0], err
 }
 
-func validContent(content string) (string, error) {
+// validContent trims the text, checks its length and finds its mentions.
+func validContent(content string) (string, parsed, error) {
 	content = strings.TrimSpace(content)
 	fields := httpx.Fields{}
 	fields.Length("content", content, 1, maxContent)
-	return content, fields.Err()
+	if err := fields.Err(); err != nil {
+		return "", parsed{}, err
+	}
+	p, err := parseMentions(content)
+	return content, p, err
 }
 
 type SendInput struct {
 	Content string     `json:"content"`
 	Nonce   *string    `json:"nonce"`
 	ReplyTo *uuid.UUID `json:"reply_to"`
+	// ReplyMention pings the author of the replied message; true when absent.
+	ReplyMention *bool `json:"reply_mention"`
+}
+
+// replyAuthor returns the author of the message a reply answers, to ping
+// them, or nil when the reply does not ping or the author is gone or is
+// the sender.
+func replyAuthor(ctx context.Context, q querier, channelID, replyTo, sender uuid.UUID) (*uuid.UUID, error) {
+	r, err := getMessage(ctx, q, channelID, replyTo, false)
+	if err != nil {
+		return nil, err
+	}
+	if r.AuthorID == nil || *r.AuthorID == sender {
+		return nil, nil
+	}
+	return r.AuthorID, nil
 }
 
 // Send posts a message. A retry with the same nonce returns the message the
 // first attempt created (created = false) instead of a duplicate.
 func (s *Service) Send(ctx context.Context, userID, channelID uuid.UUID, in SendInput) (Message, bool, error) {
-	content, err := validContent(in.Content)
+	content, parsed, err := validContent(in.Content)
 	if err != nil {
 		return Message{}, false, err
 	}
@@ -192,25 +223,35 @@ func (s *Service) Send(ctx context.Context, userID, channelID uuid.UUID, in Send
 	m := Message{
 		ID: uuid.Must(uuid.NewV7()), ChannelID: channelID, GuildID: ch.guildID, AuthorID: &userID,
 		Content: content, Nonce: in.Nonce, ReplyTo: in.ReplyTo,
-		MentionEveryone: ch.perms.Has(perm.MentionEveryone) && everyoneRegex.MatchString(content),
+		ReplyMention: in.ReplyTo != nil && (in.ReplyMention == nil || *in.ReplyMention),
 	}
 	err = pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
+		var pinged *uuid.UUID
 		if in.ReplyTo != nil {
-			if _, err := getMessage(ctx, tx, channelID, *in.ReplyTo, false); err != nil {
-				if errors.Is(err, httpx.ErrNotFound) {
-					return errBadReply
-				}
+			author, err := replyAuthor(ctx, tx, channelID, *in.ReplyTo, userID)
+			if errors.Is(err, httpx.ErrNotFound) {
+				return errBadReply
+			} else if err != nil {
 				return err
 			}
+			if m.ReplyMention {
+				pinged = author
+			}
 		}
+		mn, err := s.resolveMentions(ctx, ch, parsed, pinged)
+		if err != nil {
+			return err
+		}
+		mn.apply(&m)
 		if err := tx.QueryRow(ctx,
-			`INSERT INTO messages (id, channel_id, guild_id, author_id, content, nonce, reply_to, mention_everyone)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING created_at`,
-			m.ID, m.ChannelID, m.GuildID, m.AuthorID, m.Content, m.Nonce, m.ReplyTo, m.MentionEveryone).
+			`INSERT INTO messages (id, channel_id, guild_id, author_id, content, nonce, reply_to, reply_mention,
+			                       mention_everyone, mentions, mention_roles)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING created_at`,
+			m.ID, m.ChannelID, m.GuildID, m.AuthorID, m.Content, m.Nonce, m.ReplyTo, m.ReplyMention,
+			m.MentionEveryone, m.Mentions, m.MentionRoles).
 			Scan(&m.CreatedAt); err != nil {
 			return err
 		}
-		var err error
 		if m, err = s.withAuthor(ctx, m); err != nil {
 			return err
 		}
@@ -286,7 +327,7 @@ func (s *Service) History(ctx context.Context, userID, channelID uuid.UUID, pg P
 
 // Edit changes the content of the caller's own message.
 func (s *Service) Edit(ctx context.Context, userID, channelID, id uuid.UUID, content string) (Message, error) {
-	content, err := validContent(content)
+	content, parsed, err := validContent(content)
 	if err != nil {
 		return Message{}, err
 	}
@@ -307,11 +348,25 @@ func (s *Service) Edit(ctx context.Context, userID, channelID, id uuid.UUID, con
 		if !ch.perms.Has(perm.SendMessages) {
 			return httpx.ErrForbidden
 		}
+		var pinged *uuid.UUID
+		if m.ReplyTo != nil && m.ReplyMention {
+			// The replied message may be gone by now; then nobody is pinged for it.
+			if pinged, err = replyAuthor(ctx, tx, channelID, *m.ReplyTo, userID); errors.Is(err, httpx.ErrNotFound) {
+				pinged = nil
+			} else if err != nil {
+				return err
+			}
+		}
+		mn, err := s.resolveMentions(ctx, ch, parsed, pinged)
+		if err != nil {
+			return err
+		}
 		m.Content = content
-		m.MentionEveryone = ch.perms.Has(perm.MentionEveryone) && everyoneRegex.MatchString(content)
+		mn.apply(&m)
 		if err := tx.QueryRow(ctx,
-			`UPDATE messages SET content = $2, mention_everyone = $3, edited_at = now() WHERE id = $1 RETURNING edited_at`,
-			id, m.Content, m.MentionEveryone).Scan(&m.EditedAt); err != nil {
+			`UPDATE messages SET content = $2, mention_everyone = $3, mentions = $4, mention_roles = $5, edited_at = now()
+			 WHERE id = $1 RETURNING edited_at`,
+			id, m.Content, m.MentionEveryone, m.Mentions, m.MentionRoles).Scan(&m.EditedAt); err != nil {
 			return err
 		}
 		if m, err = s.withAuthor(ctx, m); err != nil {

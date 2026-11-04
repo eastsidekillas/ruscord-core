@@ -43,6 +43,9 @@ type Role struct {
 	Position    int              `json:"position"`
 	Permissions perm.Permissions `json:"permissions"`
 	Color       int              `json:"color"`
+	// Mentionable lets anyone ping the role; otherwise only members with
+	// MENTION_EVERYONE can (ADR-0035).
+	Mentionable bool `json:"mentionable"`
 }
 
 type Overwrite struct {

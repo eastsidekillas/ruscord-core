@@ -132,8 +132,8 @@ username; email уникален без учёта регистра.
 | `PUT /channels/{id}/permissions/{target_id}` | `{type: 1 роль / 2 участник, allow?, deny?}` | 200, канал | `MANAGE_ROLES` в канале, только свои биты; `ADMINISTRATOR` в канале нельзя (422) |
 | `DELETE /channels/{id}/permissions/{target_id}` | — | 204 | то же |
 | `GET /guilds/{id}/roles` | — | 200, роли по возрастанию позиции | участник |
-| `POST /guilds/{id}/roles` | `{name, permissions?, color?}` | 201, роль на позиции 1 | `MANAGE_ROLES`, только свои биты |
-| `PATCH /guilds/{id}/roles/{role_id}` | `{name?, permissions?, color?, position?}` | 200, роль | роль ниже вашей высшей до и после изменения |
+| `POST /guilds/{id}/roles` | `{name, permissions?, color?, mentionable?}` | 201, роль на позиции 1 | `MANAGE_ROLES`, только свои биты |
+| `PATCH /guilds/{id}/roles/{role_id}` | `{name?, permissions?, color?, position?, mentionable?}` | 200, роль | роль ниже вашей высшей до и после изменения |
 | `DELETE /guilds/{id}/roles/{role_id}` | — | 204 | роль ниже вашей высшей |
 | `GET /guilds/{id}/members?after=&limit=` | — | 200, участники по `user_id`, до 1000 | участник |
 | `PATCH /guilds/{id}/members/@me` | `{nick}` (`null` или `""` сбрасывает) | 204 | `CHANGE_NICKNAME` |
@@ -157,7 +157,8 @@ username; email уникален без учёта регистра.
 Типы: 0 текст, 2 голос, 4 категория. `user_limit` (0–99) и `bitrate` (8000–384000,
 по умолчанию 64000) только у голосовых. Категории не вкладываются.
 
-Роль: `{id, guild_id, name, position, permissions, color}`. У @everyone id сервера
+Роль: `{id, guild_id, name, position, permissions, color, mentionable}`;
+`mentionable` — роль может упомянуть любой (ADR-0035), у @everyone не меняется (400). У @everyone id сервера
 и позиция 0. Его нельзя удалить, переименовать, переместить или выдать
 (400 `everyone_role`, у каждого случая свой текст), но можно менять его права.
 
@@ -252,13 +253,13 @@ username; email уникален без учёта регистра.
 
 | Метод и путь | Тело | Ответ | Права |
 |---|---|---|---|
-| `POST /channels/{id}/messages` | `{content, nonce?, reply_to?}` | 201, сообщение; 200 при повторе с тем же `nonce` | `SEND_MESSAGES` |
+| `POST /channels/{id}/messages` | `{content, nonce?, reply_to?, reply_mention?}` | 201, сообщение; 200 при повторе с тем же `nonce` | `SEND_MESSAGES` |
 | `GET /channels/{id}/messages?before=&after=&limit=` | — | 200, сообщения, новые первыми | `READ_MESSAGE_HISTORY` |
 | `PATCH /channels/{id}/messages/{message_id}` | `{content}` | 200, сообщение | автор и `SEND_MESSAGES` сейчас |
 | `DELETE /channels/{id}/messages/{message_id}` | — | 204 | автор или `MANAGE_MESSAGES` (в личках только автор) |
 
 Сообщение: `{id, channel_id, guild_id?, author: {id, username, display_name, avatar}, content,
-nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
+nonce?, reply_to?, mention_everyone, mentions, mention_roles, created_at, edited_at?}`.
 
 - `content`: от 1 до 4000 символов после обрезки пробелов. `nonce` — строка
   до 64 байт от клиента; повтор с тем же nonce в том же канале не создаёт
@@ -266,6 +267,17 @@ nonce?, reply_to?, mention_everyone, created_at, edited_at?}`.
 - `reply_to` должен быть сообщением этого же канала (иначе 422).
 - `mention_everyone` = true, только если в тексте есть `@everyone` или `@here`
   и у автора есть `MENTION_EVERYONE`.
+- Упоминания (ADR-0035) пишутся в тексте как `<@user_id>`, `<@&role_id>` и
+  `<#channel_id>`; клиент показывает вместо них имена. Внутри кода (`` `…` ``,
+  ```` ``` ````) упоминания и `@everyone` не пингуют.
+  - `mentions` — упомянутые пользователи, которые есть в канале: участники
+    сервера или получатели лички. Ответ добавляет автора исходного сообщения,
+    если `reply_mention` не false (по умолчанию true) и это не сам автор.
+  - `mention_roles` — роли сервера, которые автор может пинговать: с
+    `mentionable` или любые при `MENTION_EVERYONE`. В личках всегда пусто.
+  - Больше 50 разных упомянутых пользователей и ролей — 422.
+  - Правка проверяет упоминания заново по текущим правам; пинг ответа
+    сохраняется, пока исходное сообщение есть.
 - История: `limit` от 1 до 100 (по умолчанию 50); `before` — старше этого id,
   `after` — новее этого id (ближайшие к нему), оба вместе нельзя.
 - Голосовой канал или категория: 400 `not_text_channel`. Скрытый канал, чужая

@@ -52,7 +52,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-  # The real client (ruscord-fe master) against this core, both in Docker:
+  # The real client (ruscord-fe master, or its branch of the same name) against this core, both in Docker:
   # register, friends, DMs, servers, roles, bans, devices, a dropped
   # connection and a core restart (ruscord-fe e2e/ci.sh).
   e2e:
@@ -62,8 +62,15 @@ jobs:
         with: { path: ruscord-core }
       # Public now; if the repository becomes private, this needs a token
       # with read access to it (repository secret).
+      # A ruscord-fe branch named like this one goes with it (a change that
+      # needs both repositories); otherwise master.
+      - id: pair
+        run: |
+          b="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          if git ls-remote --exit-code --heads https://github.com/eastsidekillas/ruscord-fe "$b" >/dev/null; then ref="$b"; else ref=master; fi
+          echo "ruscord-fe: $ref"; echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
-        with: { repository: eastsidekillas/ruscord-fe, ref: master, path: ruscord-fe }
+        with: { repository: eastsidekillas/ruscord-fe, ref: '${{ steps.pair.outputs.ref }}', path: ruscord-fe }
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -88,8 +95,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { path: ruscord-core }
+      # A ruscord-fe branch named like this one goes with it (a change that
+      # needs both repositories); otherwise master.
+      - id: pair
+        run: |
+          b="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          if git ls-remote --exit-code --heads https://github.com/eastsidekillas/ruscord-fe "$b" >/dev/null; then ref="$b"; else ref=master; fi
+          echo "ruscord-fe: $ref"; echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
-        with: { repository: eastsidekillas/ruscord-fe, ref: master, path: ruscord-fe }
+        with: { repository: eastsidekillas/ruscord-fe, ref: '${{ steps.pair.outputs.ref }}', path: ruscord-fe }
       - uses: actions/setup-node@v4
         with:
           node-version: 22
