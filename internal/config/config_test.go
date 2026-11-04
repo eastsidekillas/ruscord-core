@@ -148,3 +148,16 @@ func TestAutoMigrateDefaultsToDevOnly(t *testing.T) {
 		t.Error("prod must not auto-migrate by default")
 	}
 }
+
+func TestLoadAdminUserIDs(t *testing.T) {
+	c, err := load(env(map[string]string{"RUSCORD_ADMIN_USER_IDS": " 019a0000-0000-7000-8000-000000000001, ,019a0000-0000-7000-8000-000000000002"}))
+	if err != nil || len(c.AdminUserIDs) != 2 || c.AdminUserIDs[1].String() != "019a0000-0000-7000-8000-000000000002" {
+		t.Fatalf("parsed %v, %v", c.AdminUserIDs, err)
+	}
+	if _, err := load(env(map[string]string{"RUSCORD_ADMIN_USER_IDS": "owner"})); err == nil || !strings.Contains(err.Error(), "RUSCORD_ADMIN_USER_IDS") {
+		t.Fatalf("not an id: %v", err)
+	}
+	if c, _ := load(env(nil)); len(c.AdminUserIDs) != 0 {
+		t.Fatalf("default: %v", c.AdminUserIDs)
+	}
+}
