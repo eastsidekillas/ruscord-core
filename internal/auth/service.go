@@ -23,6 +23,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
+	"github.com/eastsidekillas/ruscord-core/internal/stats"
 )
 
 // refreshGrace is how long the previous refresh token stays acceptable after
@@ -132,6 +133,9 @@ type RegisterInput struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
 	Password    string `json:"password"`
+	// Ref is the tag of the link the user came through (?ref=), for owner
+	// stats; a tag that is not one is dropped, not an error.
+	Ref string `json:"ref"`
 }
 
 var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_.]{2,32}$`)
@@ -142,6 +146,7 @@ func (in *RegisterInput) normalize() *httpx.Error {
 	in.Email = strings.TrimSpace(in.Email)
 	in.Username = strings.TrimSpace(in.Username)
 	in.DisplayName = strings.TrimSpace(in.DisplayName)
+	in.Ref = stats.Ref(in.Ref)
 	if in.DisplayName == "" {
 		in.DisplayName = in.Username
 	}
@@ -209,7 +214,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput, c ClientInfo) 
 	if err != nil {
 		return Tokens{}, err
 	}
-	switch err := s.store.createUserWithSession(ctx, u, sess, c.Device, parseIP(c.IP)); {
+	switch err := s.store.createUserWithSession(ctx, u, in.Ref, sess, c.Device, parseIP(c.IP)); {
 	case errors.Is(err, errEmailTaken):
 		return Tokens{}, errEmailTakenAPI
 	case errors.Is(err, errUsernameTaken):
@@ -408,6 +413,8 @@ func (s *Service) IssueTicket(ctx context.Context, p Principal) (string, error) 
 	if err := s.limit(ctx, ruleTicket, p.SessionID.String()); err != nil {
 		return "", err
 	}
+	// Every open app connects to the gateway with a ticket: that is a day of use.
+	s.markActive(ctx, p)
 	return s.tickets.Issue(ctx, p)
 }
 

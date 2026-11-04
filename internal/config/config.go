@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Role is a module of the monolith that this process runs.
@@ -69,6 +71,8 @@ type Config struct {
 	// TrustedProxies are reverse proxies whose X-Forwarded-For is believed
 	// (per-IP rate limits need the real client address, ADR-0020).
 	TrustedProxies []netip.Prefix
+	// AdminUserIDs may see owner statistics (ADR-0042); empty means nobody.
+	AdminUserIDs []uuid.UUID
 }
 
 func (c Config) IsDev() bool { return c.Env == "dev" }
@@ -146,6 +150,17 @@ func load(getenv func(string) string) (Config, error) {
 			continue
 		}
 		c.TrustedProxies = append(c.TrustedProxies, prefix.Masked())
+	}
+	for _, s := range strings.Split(get("RUSCORD_ADMIN_USER_IDS", ""), ",") {
+		if s = strings.TrimSpace(s); s == "" {
+			continue
+		}
+		id, err := uuid.Parse(s)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("RUSCORD_ADMIN_USER_IDS: %q is not a user id", s))
+			continue
+		}
+		c.AdminUserIDs = append(c.AdminUserIDs, id)
 	}
 	c.AutoMigrate = get("RUSCORD_AUTO_MIGRATE", strconv.FormatBool(c.Env == "dev")) == "true"
 

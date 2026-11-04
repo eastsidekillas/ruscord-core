@@ -38,6 +38,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 	"github.com/eastsidekillas/ruscord-core/internal/social"
+	"github.com/eastsidekillas/ruscord-core/internal/stats"
 	"github.com/eastsidekillas/ruscord-core/internal/voice"
 )
 
@@ -207,6 +208,8 @@ func run() error {
 			guild.NewHandler(guilds, authHTTP.RequireAuth).Register(mux)
 			social.NewHandler(socials, authHTTP.RequireAuth).Register(mux)
 			messages := message.NewService(clients.PG, svc, guilds, socials, limiter, eph)
+			reports := stats.NewService(clients.PG, limiter, cfg.AdminUserIDs, svc, guilds, socials, messages, pres)
+			stats.NewHandler(reports, authHTTP.RequireAuth, auth.UserID).Register(mux)
 			if files != nil {
 				messages.WithFiles(files, cdn)
 			}

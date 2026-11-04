@@ -33,7 +33,7 @@ origin задаёт `RUSCORD_ALLOWED_ORIGINS`.
 
 | Метод и путь | Тело | Ответ | Ошибки |
 |---|---|---|---|
-| `POST /auth/register` | `{email, username, display_name?, password}` | 201, пользователь, ставит cookie | 422 `validation_failed`, 409 `email_taken` / `username_taken`, 429 |
+| `POST /auth/register` | `{email, username, display_name?, password, ref?}` (`ref` — метка ссылки `?ref=`, неподходящая отбрасывается) | 201, пользователь, ставит cookie | 422 `validation_failed`, 409 `email_taken` / `username_taken`, 429 |
 | `POST /auth/login` | `{email, password}` | 200, пользователь, ставит cookie | 401 `invalid_credentials`, 429 |
 | `POST /auth/refresh` | — (cookie `rc_rt`) | 200, пользователь, новые cookie | 401 `session_expired`, 429 |
 | `POST /auth/logout` | — (cookie `rc_rt`) | 204, стирает cookie | — |
@@ -387,6 +387,34 @@ nonce?, reply_to?, mention_everyone, mentions, mention_roles, attachments, creat
 10 с или до сообщения от того же автора.
 
 Во всех текстовых полях символ NUL запрещён (422).
+
+## Статистика владельца (ADR-0042)
+
+Только счётчики, без списков людей и содержимого.
+
+- `POST /visits {ref?}` → 204, без входа. Считает заход на сайт по метке
+  ссылки, один раз на адрес за 30 минут. Cookie и адреса не сохраняются.
+- `GET /admin/stats?days=7..90` (по умолчанию 30) → 200. Доступен только
+  id из `RUSCORD_ADMIN_USER_IDS`, остальным — 404. Ответ кешируется на 30 с.
+
+  ```json
+  {
+    "generated_at": "…", "zone": "Europe/Moscow",
+    "days": ["2026-10-07", "…", "2026-11-05"],
+    "now": {"online": 0, "sessions": 0, "in_voice": 0, "in_calls": 0,
+            "active_day": 0, "active_week": 0, "active_month": 0},
+    "totals": {"users": 0, "guilds": 0, "messages": 0, "attachment_bytes": 0},
+    "series": {"visits": [], "registrations": [], "active_users": [],
+               "messages": [], "senders": [], "attachments": [],
+               "guilds": [], "joins": []},
+    "refs": [{"ref": "stream", "counts": {"visits": 0, "registrations": 0}}]
+  }
+  ```
+
+  - `series` — одно число на каждый день из `days`.
+  - `refs` — заходы и регистрации за период по меткам; `""` — без метки.
+  - Активный день — день, когда пользователь открыл приложение (получил
+    билет gateway).
 
 ## Голос (ADR-0025)
 

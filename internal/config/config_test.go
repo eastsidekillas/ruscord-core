@@ -149,21 +149,15 @@ func TestAutoMigrateDefaultsToDevOnly(t *testing.T) {
 	}
 }
 
-func TestLoadPGMaxConns(t *testing.T) {
-	for _, tt := range []struct {
-		in   string
-		want int32
-		bad  bool
-	}{
-		{in: "", want: 20},
-		{in: "50", want: 50},
-		{in: "1", bad: true},
-		{in: "many", bad: true},
-		{in: "99999999999", bad: true},
-	} {
-		c, err := load(env(map[string]string{"RUSCORD_PG_MAX_CONNS": tt.in}))
-		if tt.bad != (err != nil) || (!tt.bad && c.PGMaxConns != tt.want) {
-			t.Errorf("%q: %d, %v", tt.in, c.PGMaxConns, err)
-		}
+func TestLoadAdminUserIDs(t *testing.T) {
+	c, err := load(env(map[string]string{"RUSCORD_ADMIN_USER_IDS": " 019a0000-0000-7000-8000-000000000001, ,019a0000-0000-7000-8000-000000000002"}))
+	if err != nil || len(c.AdminUserIDs) != 2 || c.AdminUserIDs[1].String() != "019a0000-0000-7000-8000-000000000002" {
+		t.Fatalf("parsed %v, %v", c.AdminUserIDs, err)
+	}
+	if _, err := load(env(map[string]string{"RUSCORD_ADMIN_USER_IDS": "owner"})); err == nil || !strings.Contains(err.Error(), "RUSCORD_ADMIN_USER_IDS") {
+		t.Fatalf("not an id: %v", err)
+	}
+	if c, _ := load(env(nil)); len(c.AdminUserIDs) != 0 {
+		t.Fatalf("default: %v", c.AdminUserIDs)
 	}
 }

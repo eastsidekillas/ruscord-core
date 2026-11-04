@@ -52,12 +52,12 @@ type store struct {
 
 const uniqueViolation = "23505"
 
-func (s *store) createUserWithSession(ctx context.Context, u User, sess session, device string, ip netip.Addr) error {
+func (s *store) createUserWithSession(ctx context.Context, u User, ref string, sess session, device string, ip netip.Addr) error {
 	return pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
-			`INSERT INTO users (id, email, username, display_name, password_hash, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $6)`,
-			u.ID, u.Email, u.Username, u.DisplayName, u.passwordHash, u.CreatedAt)
+			`INSERT INTO users (id, email, username, display_name, password_hash, created_at, updated_at, ref)
+			 VALUES ($1, $2, $3, $4, $5, $6, $6, NULLIF($7, ''))`,
+			u.ID, u.Email, u.Username, u.DisplayName, u.passwordHash, u.CreatedAt, ref)
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
