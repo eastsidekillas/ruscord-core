@@ -180,7 +180,7 @@ func TestCollector(t *testing.T) {
 		Key(KindAvatar, owner, []byte("failing"), ExtPNG)
 	unknown := Key(KindIcon, owner, []byte("icon"), ExtPNG) // no check registered for icons here
 	for _, k := range []string{kept, orphan, unknown} {
-		if err := c.Upload(ctx, k, []byte("x")); err != nil {
+		if err := c.Upload(ctx, k, strings.NewReader("x"), 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -203,7 +203,7 @@ func TestCollector(t *testing.T) {
 	}
 
 	// A failed delete keeps the row for a retry after the lease.
-	_ = c.Upload(ctx, failing, []byte("x"))
+	_ = c.Upload(ctx, failing, strings.NewReader("x"), 1)
 	store.SetFailDelete(true)
 	due(t, c)
 	_, _ = c.Sweep(ctx)
@@ -227,7 +227,7 @@ func TestCollectorSkipsReuploaded(t *testing.T) {
 	c, store, r := newCollector(t)
 	ctx := t.Context()
 	key := Key(KindAvatar, uuid.New(), []byte("same"), ExtPNG)
-	_ = c.Upload(ctx, key, []byte("same"))
+	_ = c.Upload(ctx, key, strings.NewReader("same"), 4)
 	due(t, c)
 
 	// Take the row like Sweep does, but stop before collecting.
@@ -239,7 +239,7 @@ func TestCollectorSkipsReuploaded(t *testing.T) {
 	}
 	// Meanwhile: uploaded again, but the referring transaction has not
 	// committed yet, so a reference check alone would say "unused".
-	if err := c.Upload(ctx, key, []byte("same")); err != nil {
+	if err := c.Upload(ctx, key, strings.NewReader("same"), 4); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.collect(ctx, key, lease); err != nil {
