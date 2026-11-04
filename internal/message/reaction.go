@@ -67,15 +67,26 @@ type ReactionEvent struct {
 // inMessage resolves the channel, checks that the caller may read its
 // history and runs fn in a transaction with the message locked.
 func (s *Service) inMessage(ctx context.Context, userID, channelID, messageID uuid.UUID, fn func(tx pgx.Tx, ch channel, m Message) error) error {
-	ch, err := s.resolve(ctx, userID, channelID)
+	ch, err := s.readable(ctx, userID, channelID)
 	if err != nil {
 		return err
 	}
-	if !ch.perms.Has(perm.ReadMessageHistory) {
-		return httpx.ErrForbidden
+	return s.lockedMessage(ctx, ch, messageID, fn)
+}
+
+// readable resolves a channel whose history the caller may read.
+func (s *Service) readable(ctx context.Context, userID, channelID uuid.UUID) (channel, error) {
+	ch, err := s.resolve(ctx, userID, channelID)
+	if err == nil && !ch.perms.Has(perm.ReadMessageHistory) {
+		err = httpx.ErrForbidden
 	}
+	return ch, err
+}
+
+// lockedMessage runs fn in a transaction with a message of ch locked.
+func (s *Service) lockedMessage(ctx context.Context, ch channel, messageID uuid.UUID, fn func(tx pgx.Tx, ch channel, m Message) error) error {
 	return pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
-		m, err := getMessage(ctx, tx, channelID, messageID, true)
+		m, err := getMessage(ctx, tx, ch.id, messageID, true)
 		if err != nil {
 			return err
 		}
@@ -215,10 +226,24 @@ func withReactions(ctx context.Context, q querier, ms []Message, viewer uuid.UUI
 // Pin pins (pin = true) or unpins a message. Needs PIN_MESSAGES and to see
 // the message; the change goes out as MESSAGE_UPDATE with pinned_at.
 func (s *Service) Pin(ctx context.Context, userID, channelID, messageID uuid.UUID, pin bool) error {
-	return s.inMessage(ctx, userID, channelID, messageID, func(tx pgx.Tx, ch channel, m Message) error {
-		if !ch.perms.Has(perm.PinMessages) {
-			return httpx.ErrForbidden
-		}
+	ch, err := s.readable(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	if !ch.perms.Has(perm.PinMessages) {
+		return httpx.ErrForbidden
+	}
+	// The author goes into the event; it is looked up before the
+	// transaction (see author), and a message never changes its author.
+	cur, err := getMessage(ctx, s.pg, channelID, messageID, false)
+	if err != nil {
+		return err
+	}
+	author, err := s.author(ctx, cur.AuthorID)
+	if err != nil {
+		return err
+	}
+	return s.lockedMessage(ctx, ch, messageID, func(tx pgx.Tx, ch channel, m Message) error {
 		if (m.PinnedAt != nil) == pin {
 			return nil
 		}
@@ -236,7 +261,7 @@ func (s *Service) Pin(ctx context.Context, userID, channelID, messageID uuid.UUI
 			messageID, pin).Scan(&m.PinnedAt); err != nil {
 			return err
 		}
-		m, err := s.fillOne(ctx, tx, m)
+		m, err := s.fillTx(ctx, tx, m, author)
 		if err != nil {
 			return err
 		}

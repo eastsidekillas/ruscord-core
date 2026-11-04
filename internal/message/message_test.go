@@ -26,7 +26,12 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	e := apitest.New(t)
+	return newEnvWith(t, apitest.Options{})
+}
+
+func newEnvWith(t *testing.T, o apitest.Options) *env {
+	t.Helper()
+	e := apitest.NewWith(t, o)
 	guilds := guild.NewService(e.PG, e.Auth, e.Limiter)
 	socials := social.NewService(e.PG, e.Auth, guilds, e.Limiter)
 	guilds.OnChannelsDeleted(DeleteChannels)

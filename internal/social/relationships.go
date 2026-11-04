@@ -65,6 +65,13 @@ type Service struct {
 	channelsDeleted hooks.ChannelsDeleted
 }
 
+// LockChannels holds DMs and groups against deletion until tx ends and
+// returns those that exist (hooks.LockChannels). A group is deleted under
+// the FOR UPDATE lock of getDM.
+func (s *Service) LockChannels(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) ([]uuid.UUID, error) {
+	return hooks.LockChannels(ctx, tx, "dm_channels", ids)
+}
+
 // OnChannelsDeleted registers the hook run when a group DM is deleted.
 func (s *Service) OnChannelsDeleted(h hooks.ChannelsDeleted) { s.channelsDeleted = h }
 

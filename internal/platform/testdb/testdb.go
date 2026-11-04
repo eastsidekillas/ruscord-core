@@ -62,5 +62,19 @@ func New(t testing.TB) *pgxpool.Pool {
 	return pg
 }
 
+// Pool opens another pool on the schema of pg with at most maxConns
+// connections, closed when the test ends.
+func Pool(t testing.TB, pg *pgxpool.Pool, maxConns int32) *pgxpool.Pool {
+	t.Helper()
+	cfg := pg.Config()
+	cfg.MaxConns, cfg.MinConns = maxConns, 0
+	p, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	return p
+}
+
 // Logger discards output; for components that require a logger in tests.
 func Logger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

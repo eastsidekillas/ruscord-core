@@ -8,8 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/eastsidekillas/ruscord-core/internal/events"
-	"github.com/eastsidekillas/ruscord-core/internal/perm"
-	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
 
@@ -79,17 +77,17 @@ func (s *Service) ReadStates(ctx context.Context, userID uuid.UUID) ([]ReadState
 // Ack marks a channel read up to a message of it. Marks only move forward;
 // a mark that moves tells the user's other sessions (MESSAGE_ACK).
 func (s *Service) Ack(ctx context.Context, userID, channelID, messageID uuid.UUID) error {
-	ch, err := s.resolve(ctx, userID, channelID)
+	ch, err := s.readable(ctx, userID, channelID)
 	if err != nil {
 		return err
-	}
-	if !ch.perms.Has(perm.ReadMessageHistory) {
-		return httpx.ErrForbidden
 	}
 	if ok, _, err := s.limiter.Allow(ctx, ruleAck, userID.String()); err != nil || !ok {
 		return err
 	}
 	return pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
+		if err := s.lockChannel(ctx, tx, ch); err != nil {
+			return err
+		}
 		if _, err := getMessage(ctx, tx, channelID, messageID, false); err != nil {
 			return err
 		}
@@ -108,6 +106,10 @@ func (s *Service) AckGuild(ctx context.Context, userID, guildID uuid.UUID) error
 		return nil
 	}
 	return pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
+		channels, err := s.guilds.LockChannels(ctx, tx, channels)
+		if err != nil {
+			return err
+		}
 		return ack(ctx, tx, userID, channels, true,
 			`(SELECT m.id FROM messages m WHERE m.channel_id = c.id ORDER BY m.id DESC LIMIT 1)`)
 	})

@@ -48,6 +48,13 @@ type GuildChannels interface {
 	// Readable lists the text channels the user may read (in one guild or
 	// all) and their roles there.
 	Readable(ctx context.Context, userID uuid.UUID, guildID *uuid.UUID) ([]uuid.UUID, []uuid.UUID, error)
+	ChannelLocker
+}
+
+// ChannelLocker holds channels against deletion for the rest of tx and
+// returns those that exist (hooks.LockChannels).
+type ChannelLocker interface {
+	LockChannels(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) ([]uuid.UUID, error)
 }
 
 // DMChannels is what message needs from the social module.
@@ -55,6 +62,7 @@ type DMChannels interface {
 	Permissions(ctx context.Context, userID, channelID uuid.UUID) (perm.Permissions, []uuid.UUID, error)
 	// ChannelIDs lists the DMs and groups of the user.
 	ChannelIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	ChannelLocker
 }
 
 type Service struct {
@@ -178,6 +186,50 @@ func (s *Service) fillOne(ctx context.Context, q querier, m Message) (Message, e
 	return ms[0], err
 }
 
+// A transaction reads only through tx. Other modules read through the pool,
+// so a call to them inside one takes a second connection; when every
+// connection is held by a transaction that waits for one more, the API
+// stops (R1 of docs/audit/2026-11-04.md). What they know (profiles,
+// mentions) is looked up before the transaction begins.
+
+// author looks up a sender's profile; nil when there is none.
+func (s *Service) author(ctx context.Context, id *uuid.UUID) (*auth.PublicUser, error) {
+	if id == nil {
+		return nil, nil
+	}
+	users, err := s.users.Users(ctx, []uuid.UUID{*id})
+	if err != nil {
+		return nil, err
+	}
+	if u, ok := users[*id]; ok {
+		return &u, nil
+	}
+	return nil, nil
+}
+
+// fillTx is fillOne inside a transaction, with the author looked up before it.
+func (s *Service) fillTx(ctx context.Context, tx pgx.Tx, m Message, author *auth.PublicUser) (Message, error) {
+	m.Author = author
+	ms := []Message{m}
+	err := s.withAttachments(ctx, tx, ms)
+	return ms[0], err
+}
+
+// lockChannel holds the channel against deletion until tx ends, so what tx
+// writes under its id is either deleted with it or not written at all
+// (R2 of docs/audit/2026-11-04.md). A channel already gone is not found.
+func (s *Service) lockChannel(ctx context.Context, tx pgx.Tx, ch channel) error {
+	var owner ChannelLocker = s.dms
+	if ch.guildID != nil {
+		owner = s.guilds
+	}
+	ids, err := owner.LockChannels(ctx, tx, []uuid.UUID{ch.id})
+	if err == nil && len(ids) == 0 {
+		return httpx.ErrNotFound
+	}
+	return err
+}
+
 // validContent trims the text, checks its length and finds its mentions.
 // The text may be empty only when the message has files.
 func validContent(content string, files bool) (string, parsed, error) {
@@ -255,24 +307,31 @@ func (s *Service) Send(ctx context.Context, userID, channelID uuid.UUID, in Send
 		Content: content, Nonce: in.Nonce, ReplyTo: in.ReplyTo,
 		ReplyMention: in.ReplyTo != nil && (in.ReplyMention == nil || *in.ReplyMention),
 	}
-	err = pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
-		var pinged *uuid.UUID
-		if in.ReplyTo != nil {
-			author, err := replyAuthor(ctx, tx, channelID, *in.ReplyTo, userID)
-			if errors.Is(err, httpx.ErrNotFound) {
-				return errBadReply
-			} else if err != nil {
-				return err
-			}
-			if m.ReplyMention {
-				pinged = author
-			}
+	var pinged *uuid.UUID
+	if in.ReplyTo != nil {
+		author, err := replyAuthor(ctx, s.pg, channelID, *in.ReplyTo, userID)
+		if errors.Is(err, httpx.ErrNotFound) {
+			return Message{}, false, errBadReply
+		} else if err != nil {
+			return Message{}, false, err
 		}
-		mn, err := s.resolveMentions(ctx, ch, parsed, pinged)
-		if err != nil {
+		if m.ReplyMention {
+			pinged = author
+		}
+	}
+	mn, err := s.resolveMentions(ctx, ch, parsed, pinged)
+	if err != nil {
+		return Message{}, false, err
+	}
+	mn.apply(&m)
+	sender, err := s.author(ctx, &userID)
+	if err != nil {
+		return Message{}, false, err
+	}
+	err = pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
+		if err := s.lockChannel(ctx, tx, ch); err != nil {
 			return err
 		}
-		mn.apply(&m)
 		if err := tx.QueryRow(ctx,
 			`INSERT INTO messages (id, channel_id, guild_id, author_id, content, nonce, reply_to, reply_mention,
 			                       mention_everyone, mentions, mention_roles)
@@ -289,7 +348,8 @@ func (s *Service) Send(ctx context.Context, userID, channelID uuid.UUID, in Send
 		if err := ack(ctx, tx, userID, []uuid.UUID{channelID}, false, `$3::uuid`, m.ID); err != nil {
 			return err
 		}
-		if m, err = s.fillOne(ctx, tx, m); err != nil {
+		var err error
+		if m, err = s.fillTx(ctx, tx, m, sender); err != nil {
 			return err
 		}
 		return events.Write(ctx, tx, events.Event{Topic: ch.topic, Type: events.MessageCreate, Data: m})
@@ -387,18 +447,40 @@ func (s *Service) Edit(ctx context.Context, userID, channelID, id uuid.UUID, con
 	if err != nil {
 		return Message{}, err
 	}
-	var m Message
+	// Mentions are resolved before the transaction (see author) from the
+	// message as it is now: its author and reply never change.
+	m, err := getMessage(ctx, s.pg, channelID, id, false)
+	if err != nil {
+		return Message{}, err
+	}
+	if m.AuthorID == nil || *m.AuthorID != userID {
+		return Message{}, errNotAuthor
+	}
+	// Editing needs the right to write here now, not only when it was sent.
+	if !ch.perms.Has(perm.SendMessages) {
+		return Message{}, httpx.ErrForbidden
+	}
+	var pinged *uuid.UUID
+	if m.ReplyTo != nil && m.ReplyMention {
+		// The replied message may be gone by now; then nobody is pinged for it.
+		if pinged, err = replyAuthor(ctx, s.pg, channelID, *m.ReplyTo, userID); errors.Is(err, httpx.ErrNotFound) {
+			pinged = nil
+		} else if err != nil {
+			return Message{}, err
+		}
+	}
+	mn, err := s.resolveMentions(ctx, ch, parsed, pinged)
+	if err != nil {
+		return Message{}, err
+	}
+	sender, err := s.author(ctx, &userID)
+	if err != nil {
+		return Message{}, err
+	}
 	err = pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
 		var err error
 		if m, err = getMessage(ctx, tx, channelID, id, true); err != nil {
 			return err
-		}
-		if m.AuthorID == nil || *m.AuthorID != userID {
-			return errNotAuthor
-		}
-		// Editing needs the right to write here now, not only when it was sent.
-		if !ch.perms.Has(perm.SendMessages) {
-			return httpx.ErrForbidden
 		}
 		if content == "" {
 			var files bool
@@ -409,19 +491,6 @@ func (s *Service) Edit(ctx context.Context, userID, channelID, id uuid.UUID, con
 				return httpx.Validation(map[string]string{"content": "От 1 до 4000 символов"})
 			}
 		}
-		var pinged *uuid.UUID
-		if m.ReplyTo != nil && m.ReplyMention {
-			// The replied message may be gone by now; then nobody is pinged for it.
-			if pinged, err = replyAuthor(ctx, tx, channelID, *m.ReplyTo, userID); errors.Is(err, httpx.ErrNotFound) {
-				pinged = nil
-			} else if err != nil {
-				return err
-			}
-		}
-		mn, err := s.resolveMentions(ctx, ch, parsed, pinged)
-		if err != nil {
-			return err
-		}
 		m.Content = content
 		mn.apply(&m)
 		if err := tx.QueryRow(ctx,
@@ -430,7 +499,7 @@ func (s *Service) Edit(ctx context.Context, userID, channelID, id uuid.UUID, con
 			id, m.Content, m.MentionEveryone, m.Mentions, m.MentionRoles).Scan(&m.EditedAt); err != nil {
 			return err
 		}
-		if m, err = s.fillOne(ctx, tx, m); err != nil {
+		if m, err = s.fillTx(ctx, tx, m, sender); err != nil {
 			return err
 		}
 		return events.Write(ctx, tx, events.Event{Topic: ch.topic, Type: events.MessageUpdate, Data: m})

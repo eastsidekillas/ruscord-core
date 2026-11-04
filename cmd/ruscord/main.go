@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 
 	"github.com/eastsidekillas/ruscord-core/internal/auth"
@@ -70,6 +71,7 @@ func run() error {
 
 	clients, err := store.Open(ctx, store.Options{
 		PostgresURL:   cfg.PostgresURL,
+		PGMaxConns:    cfg.PGMaxConns,
 		RedisAddr:     cfg.RedisAddr,
 		RedisPassword: cfg.RedisPassword,
 		NATSURL:       cfg.NATSURL,
@@ -99,6 +101,17 @@ func run() error {
 			err := clients.PG.QueryRow(ctx, query).Scan(&v)
 			return v, err
 		})
+	}
+	// Pool pressure (ADR-0040): waits for a connection mean the pool is short.
+	for _, p := range []struct {
+		name string
+		pool *pgxpool.Pool
+	}{{"main", clients.PG}, {"lookup", clients.Lookup}} {
+		name, pool := p.name, p.pool
+		reg.GaugeFunc("ruscord_pg_"+name+"_acquired_conns", "Connections of the "+name+" Postgres pool in use.", log,
+			func(context.Context) (float64, error) { return float64(pool.Stat().AcquiredConns()), nil })
+		reg.GaugeFunc("ruscord_pg_"+name+"_empty_acquires", "Acquires from the "+name+" Postgres pool that had to wait, since start.", log,
+			func(context.Context) (float64, error) { return float64(pool.Stat().EmptyAcquireCount()), nil })
 	}
 	gauge("ruscord_outbox_backlog", "Outbox events not yet published to NATS.",
 		`SELECT count(*) FROM outbox WHERE published_at IS NULL`)
@@ -161,6 +174,7 @@ func run() error {
 		limiter := ratelimit.New(clients.Redis)
 		svc, err := auth.NewService(ctx, auth.Deps{
 			PG:      clients.PG,
+			Lookup:  clients.Lookup,
 			Signer:  signer,
 			Limiter: limiter,
 			Tickets: auth.NewTickets(clients.Redis),

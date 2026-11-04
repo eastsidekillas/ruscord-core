@@ -44,14 +44,37 @@ type Env struct {
 
 	srv    *httptest.Server
 	signer *auth.Signer
+	// timeout bounds each request of a User; 0 means none.
+	timeout time.Duration
+}
+
+// Options change what New builds.
+type Options struct {
+	// MaxConns caps the pool the modules get (PG); auth's lookups keep a
+	// pool of their own, as in production. With 1, a transaction that asks
+	// the pool for a second connection waits for ever, so every request
+	// then fails after a few seconds instead.
+	MaxConns int32
 }
 
 // New starts an isolated environment; the test runs in parallel with others.
 // Modules register their handlers on Mux.
 func New(t *testing.T) *Env {
 	t.Helper()
+	return NewWith(t, Options{})
+}
+
+// NewWith is New with options.
+func NewWith(t *testing.T, o Options) *Env {
+	t.Helper()
 	pg := testdb.New(t)
 	t.Parallel()
+	lookup := pg
+	var timeout time.Duration
+	if o.MaxConns > 0 {
+		pg = testdb.Pool(t, lookup, o.MaxConns)
+		timeout = 10 * time.Second
+	}
 
 	rdb := redis.NewClient(&redis.Options{Addr: miniredis.RunT(t).Addr()})
 	limiter := ratelimit.New(rdb)
@@ -59,7 +82,7 @@ func New(t *testing.T) *Env {
 	blobs := blob.NewMemory()
 	files := blob.NewCollector(pg, blobs, testdb.Logger())
 	authSvc, err := auth.NewService(context.Background(), auth.Deps{
-		PG: pg, Signer: signer, Limiter: limiter, Tickets: auth.NewTickets(rdb), Revoked: auth.NewRevocations(rdb), Files: files,
+		PG: pg, Lookup: lookup, Signer: signer, Limiter: limiter, Tickets: auth.NewTickets(rdb), Revoked: auth.NewRevocations(rdb), Files: files,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +95,7 @@ func New(t *testing.T) *Env {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &Env{T: t, PG: pg, Auth: authSvc, Limiter: limiter, Redis: rdb, RequireAuth: authHTTP.RequireAuth,
-		Mux: mux, Eph: &EphRecorder{}, Files: files, Blobs: blobs, CDN: cdn, srv: srv, signer: signer}
+		Mux: mux, Eph: &EphRecorder{}, Files: files, Blobs: blobs, CDN: cdn, srv: srv, signer: signer, timeout: timeout}
 }
 
 // Password is the password of every account User creates.
@@ -115,6 +138,14 @@ func (e *Env) User(name string) *User {
 	return &User{Env: e, ID: id, token: tok}
 }
 
+// context is the test's context, bounded by the request timeout if any.
+func (e *Env) context() (context.Context, context.CancelFunc) {
+	if e.timeout > 0 {
+		return context.WithTimeout(e.T.Context(), e.timeout)
+	}
+	return context.WithCancel(e.T.Context())
+}
+
 // URL is the base URL of the test server.
 func (e *Env) URL() string { return e.srv.URL }
 
@@ -144,7 +175,9 @@ func (u *User) Upload(method, path string, data []byte) (int, any) {
 func (u *User) send(method, path, contentType string, r io.Reader) (int, any) {
 	t := u.Env.T
 	t.Helper()
-	req, _ := http.NewRequestWithContext(t.Context(), method, u.Env.srv.URL+path, r)
+	ctx, cancel := u.Env.context()
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, method, u.Env.srv.URL+path, r)
 	req.Header.Set("Content-Type", contentType)
 	req.AddCookie(&http.Cookie{Name: "rc_at", Value: u.token}) //nolint:gosec // request cookie in a test client
 	resp, err := http.DefaultClient.Do(req)

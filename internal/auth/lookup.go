@@ -81,7 +81,7 @@ func (s *Service) Users(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Pub
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := s.store.pg.Query(ctx,
+	rows, err := s.lookup.Query(ctx,
 		`SELECT `+publicCols+` FROM users WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err

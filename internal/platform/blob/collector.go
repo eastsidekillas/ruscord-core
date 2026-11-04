@@ -13,12 +13,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/eastsidekillas/ruscord-core/internal/platform/store"
 )
 
 // RefCheck reports whether some row still refers to key. Each module that
 // stores keys registers one for its kind, so the collector never reads
-// another module's tables.
-type RefCheck func(ctx context.Context, key string) (bool, error)
+// another module's tables. It reads through q, the collector's transaction:
+// a second connection from the pool could wait for ever when every other
+// one is held by a transaction that waits too.
+type RefCheck func(ctx context.Context, q store.DB, key string) (bool, error)
 
 // How long an object stays after it stops being used, and how long a fresh
 // upload may wait for the transaction that refers to it.
@@ -164,7 +168,7 @@ func (c *Collector) collect(ctx context.Context, key string, lease [16]byte) err
 		if err != nil {
 			return err
 		}
-		used, err := check(ctx, key)
+		used, err := check(ctx, tx, key)
 		if err != nil {
 			return err
 		}
