@@ -30,7 +30,7 @@ func TestRef(t *testing.T) {
 }
 
 func TestFirstID(t *testing.T) {
-	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	at := time.Now().Add(-time.Hour).Truncate(time.Second)
 	first := stats.FirstID(at)
 	if first.Version() != 7 || first.Variant() != uuid.RFC4122 {
 		t.Fatalf("not a UUIDv7: %s", first)
