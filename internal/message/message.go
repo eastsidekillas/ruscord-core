@@ -322,6 +322,9 @@ func (s *Service) byNonce(ctx context.Context, channelID, userID uuid.UUID, nonc
 type Page struct {
 	Before *uuid.UUID
 	After  *uuid.UUID
+	// Around is a message to show with its neighbours: half the page up to
+	// and including it, half after it (a jump from search).
+	Around *uuid.UUID
 	Limit  int
 }
 
@@ -340,6 +343,14 @@ func (s *Service) History(ctx context.Context, userID, channelID uuid.UUID, pg P
 	}
 	var rows pgx.Rows
 	switch {
+	case pg.Around != nil:
+		rows, err = s.pg.Query(ctx,
+			`SELECT * FROM (
+			   (SELECT `+msgCols+` FROM messages WHERE channel_id = $1 AND id <= $2 ORDER BY id DESC LIMIT $3)
+			   UNION ALL
+			   (SELECT `+msgCols+` FROM messages WHERE channel_id = $1 AND id > $2 ORDER BY id LIMIT $4)
+			 ) m ORDER BY id DESC`,
+			channelID, *pg.Around, pg.Limit-pg.Limit/2, pg.Limit/2)
 	case pg.After != nil:
 		rows, err = s.pg.Query(ctx,
 			`SELECT * FROM (SELECT `+msgCols+` FROM messages WHERE channel_id = $1 AND id > $2 ORDER BY id LIMIT $3) m ORDER BY id DESC`,

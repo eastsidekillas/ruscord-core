@@ -338,6 +338,26 @@ nonce?, reply_to?, mention_everyone, mentions, mention_roles, attachments, creat
   `{channel_id, guild_id?, message_id}`. Закрепление — `MESSAGE_UPDATE`.
 - До 250 закреплённых в канале (422).
 
+### Поиск (ADR-0039)
+
+| Метод и путь | Ответ | Права |
+|---|---|---|
+| `GET /guilds/{id}/messages/search?…` | 200, `{total_results, messages}` | только каналы с `READ_MESSAGE_HISTORY` |
+| `GET /channels/{id}/messages/search?…` | то же, в одном канале или личке | `READ_MESSAGE_HISTORY` |
+
+- `q` — текст до 200 символов: формы слов по-русски и слова как написаны;
+  `"фраза"`, `-слово`, `или` работают. Фильтры: `author_id`, `mentions`
+  (упомянутый пользователь), `channel_id`, `has=file|image|video|link`
+  (можно несколько раз), `before`, `after` (RFC 3339), `offset` (0–5000).
+  Нужен текст или хотя бы один фильтр (иначе 422).
+- Новые первыми, по 25 сообщений (как в истории, с реакциями). `total_results`
+  — не больше 5025.
+- Канал вне доступных в `channel_id` — пустой ответ, как несуществующий.
+- Лимит: 1 поиск в секунду и 30 в минуту.
+- Перейти к найденному: `GET /channels/{id}/messages?around=<message_id>&limit=` —
+  половина страницы до сообщения (вместе с ним) и половина после;
+  `around`, `before` и `after` вместе нельзя.
+
 ### Непрочитанное (ADR-0038)
 
 | Метод и путь | Ответ | Права |

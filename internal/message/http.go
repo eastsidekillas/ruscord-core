@@ -36,6 +36,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"PUT /api/v1/channels/{channel}/pins/{message}":                              h.pin,
 		"DELETE /api/v1/channels/{channel}/pins/{message}":                           h.unpin,
 
+		"GET /api/v1/guilds/{guild}/messages/search":     h.searchGuild,
+		"GET /api/v1/channels/{channel}/messages/search": h.searchChannel,
+
 		"GET /api/v1/users/@me/read-states":                      h.readStates,
 		"POST /api/v1/channels/{channel}/messages/{message}/ack": h.ack,
 		"POST /api/v1/guilds/{guild}/ack":                        h.ackGuild,
@@ -79,8 +82,11 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) error {
 	if pg.After, err = httpx.QueryUUID(q, "after", "id сообщения"); err != nil {
 		return err
 	}
-	if pg.Before != nil && pg.After != nil {
-		return httpx.NewError(http.StatusBadRequest, "invalid_request", "Укажите before или after, не оба")
+	if pg.Around, err = httpx.QueryUUID(q, "around", "id сообщения"); err != nil {
+		return err
+	}
+	if n := countSet(pg.Before != nil, pg.After != nil, pg.Around != nil); n > 1 {
+		return httpx.NewError(http.StatusBadRequest, "invalid_request", "Укажите только одно из before, after, around")
 	}
 	if pg.Limit, err = httpx.QueryLimit(q, maxLimit); err != nil {
 		return err
@@ -127,6 +133,50 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return httpx.NoContent(w, h.svc.Delete(r.Context(), auth.UserID(r), ch, id))
+}
+
+func countSet(flags ...bool) int {
+	n := 0
+	for _, f := range flags {
+		if f {
+			n++
+		}
+	}
+	return n
+}
+
+func (h *Handler) searchGuild(w http.ResponseWriter, r *http.Request) error {
+	g, err := httpx.PathUUID(r, "guild")
+	if err != nil {
+		return err
+	}
+	q, err := parseSearch(r)
+	if err != nil {
+		return err
+	}
+	res, err := h.svc.SearchGuild(r.Context(), auth.UserID(r), g, q)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, res)
+	return nil
+}
+
+func (h *Handler) searchChannel(w http.ResponseWriter, r *http.Request) error {
+	ch, err := httpx.PathUUID(r, "channel")
+	if err != nil {
+		return err
+	}
+	q, err := parseSearch(r)
+	if err != nil {
+		return err
+	}
+	res, err := h.svc.SearchChannel(r.Context(), auth.UserID(r), ch, q)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, res)
+	return nil
 }
 
 func (h *Handler) readStates(w http.ResponseWriter, r *http.Request) error {
