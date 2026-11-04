@@ -26,6 +26,15 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"DELETE /api/v1/channels/{channel}/messages/{message}": h.delete,
 		"POST /api/v1/channels/{channel}/typing":               h.typing,
 		"POST /api/v1/channels/{channel}/attachments":          h.upload,
+
+		"PUT /api/v1/channels/{channel}/messages/{message}/reactions/{emoji}/@me":    h.react,
+		"DELETE /api/v1/channels/{channel}/messages/{message}/reactions/{emoji}/@me": h.unreact,
+		"GET /api/v1/channels/{channel}/messages/{message}/reactions/{emoji}":        h.reactors,
+		"DELETE /api/v1/channels/{channel}/messages/{message}/reactions/{emoji}":     h.clearEmoji,
+		"DELETE /api/v1/channels/{channel}/messages/{message}/reactions":             h.clearAll,
+		"GET /api/v1/channels/{channel}/pins":                                        h.pins,
+		"PUT /api/v1/channels/{channel}/pins/{message}":                              h.pin,
+		"DELETE /api/v1/channels/{channel}/pins/{message}":                           h.unpin,
 	}
 	for pattern, fn := range routes {
 		mux.Handle(pattern, h.requireAuth(httpx.Handle(fn)))
@@ -114,6 +123,87 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return httpx.NoContent(w, h.svc.Delete(r.Context(), auth.UserID(r), ch, id))
+}
+
+func (h *Handler) react(w http.ResponseWriter, r *http.Request) error {
+	ch, id, err := h.ids(r)
+	if err != nil {
+		return err
+	}
+	return httpx.NoContent(w, h.svc.React(r.Context(), auth.UserID(r), ch, id, r.PathValue("emoji")))
+}
+
+func (h *Handler) unreact(w http.ResponseWriter, r *http.Request) error {
+	ch, id, err := h.ids(r)
+	if err != nil {
+		return err
+	}
+	return httpx.NoContent(w, h.svc.Unreact(r.Context(), auth.UserID(r), ch, id, r.PathValue("emoji")))
+}
+
+func (h *Handler) clearEmoji(w http.ResponseWriter, r *http.Request) error {
+	ch, id, err := h.ids(r)
+	if err != nil {
+		return err
+	}
+	if r.PathValue("emoji") == "" {
+		return httpx.ErrNotFound
+	}
+	return httpx.NoContent(w, h.svc.ClearReactions(r.Context(), auth.UserID(r), ch, id, r.PathValue("emoji")))
+}
+
+func (h *Handler) clearAll(w http.ResponseWriter, r *http.Request) error {
+	ch, id, err := h.ids(r)
+	if err != nil {
+		return err
+	}
+	return httpx.NoContent(w, h.svc.ClearReactions(r.Context(), auth.UserID(r), ch, id, ""))
+}
+
+func (h *Handler) reactors(w http.ResponseWriter, r *http.Request) error {
+	ch, id, err := h.ids(r)
+	if err != nil {
+		return err
+	}
+	limit, err := httpx.QueryLimit(r.URL.Query(), maxReactors)
+	if err != nil {
+		return err
+	}
+	users, err := h.svc.Reactors(r.Context(), auth.UserID(r), ch, id, r.PathValue("emoji"), limit)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, users)
+	return nil
+}
+
+func (h *Handler) pins(w http.ResponseWriter, r *http.Request) error {
+	ch, err := httpx.PathUUID(r, "channel")
+	if err != nil {
+		return err
+	}
+	ms, err := h.svc.Pins(r.Context(), auth.UserID(r), ch)
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, ms)
+	return nil
+}
+
+func (h *Handler) pin(w http.ResponseWriter, r *http.Request) error {
+	ch, id, err := h.ids(r)
+	if err != nil {
+		return err
+	}
+	return httpx.NoContent(w, h.svc.Pin(r.Context(), auth.UserID(r), ch, id, true))
+}
+
+func (h *Handler) unpin(w http.ResponseWriter, r *http.Request) error {
+	ch, id, err := h.ids(r)
+	if err != nil {
+		return err
+	}
+	return httpx.NoContent(w, h.svc.Pin(r.Context(), auth.UserID(r), ch, id, false))
 }
 
 // upload takes the file as the request body, its name in ?filename= and

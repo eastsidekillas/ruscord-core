@@ -40,6 +40,13 @@ const (
 	MessageUpdate = "MESSAGE_UPDATE"
 	MessageDelete = "MESSAGE_DELETE"
 
+	// Reactions go to the channel's topic like its messages
+	// (message.ReactionEvent, docs/adr/0037-reactions-pins.md).
+	ReactionAdd         = "MESSAGE_REACTION_ADD"
+	ReactionRemove      = "MESSAGE_REACTION_REMOVE"
+	ReactionRemoveEmoji = "MESSAGE_REACTION_REMOVE_EMOJI"
+	ReactionRemoveAll   = "MESSAGE_REACTION_REMOVE_ALL"
+
 	// UserUpdate goes to the user's own topic when their account changes
 	// (for now, the chosen status). Carries the full private user object.
 	UserUpdate = "USER_UPDATE"
