@@ -85,8 +85,12 @@ type Message struct {
 	MentionRoles []uuid.UUID `json:"mention_roles"`
 	// Attachments are the files of the message, in upload order (ADR-0036).
 	Attachments []Attachment `json:"attachments"`
-	CreatedAt   time.Time    `json:"created_at"`
-	EditedAt    *time.Time   `json:"edited_at,omitempty"`
+	// Reactions as the reader sees them; null in events (ADR-0037).
+	Reactions []Reaction `json:"reactions"`
+	// PinnedAt is when the message was pinned; absent if it is not.
+	PinnedAt  *time.Time `json:"pinned_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	EditedAt  *time.Time `json:"edited_at,omitempty"`
 }
 
 // channel is a resolved channel: where it lives, what the caller may do in
@@ -124,12 +128,12 @@ func (s *Service) resolve(ctx context.Context, userID, channelID uuid.UUID) (cha
 }
 
 const msgCols = `id, channel_id, guild_id, author_id, content, nonce, reply_to, reply_mention, mention_everyone,
- mentions, mention_roles, created_at, edited_at`
+ mentions, mention_roles, created_at, edited_at, pinned_at`
 
 func scanMessage(r pgx.CollectableRow) (Message, error) {
 	var m Message
 	err := r.Scan(&m.ID, &m.ChannelID, &m.GuildID, &m.AuthorID, &m.Content, &m.Nonce, &m.ReplyTo, &m.ReplyMention,
-		&m.MentionEveryone, &m.Mentions, &m.MentionRoles, &m.CreatedAt, &m.EditedAt)
+		&m.MentionEveryone, &m.Mentions, &m.MentionRoles, &m.CreatedAt, &m.EditedAt, &m.PinnedAt)
 	return m, err
 }
 
@@ -346,7 +350,10 @@ func (s *Service) History(ctx context.Context, userID, channelID uuid.UUID, pg P
 	if err != nil {
 		return nil, err
 	}
-	return ms, s.fill(ctx, s.pg, ms)
+	if err := s.fill(ctx, s.pg, ms); err != nil {
+		return nil, err
+	}
+	return ms, withReactions(ctx, s.pg, ms, userID)
 }
 
 // Edit changes the content of the caller's own message.

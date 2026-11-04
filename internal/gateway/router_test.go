@@ -138,6 +138,18 @@ func TestRoute(t *testing.T) {
 		{name: "message of an unknown channel is dropped", in: ev(gt, events.MessageCreate, msgIn(uuid.New()))},
 		{name: "message in my DM", in: ev(dmt, events.MessageCreate, map[string]any{"id": uuid.New(), "channel_id": f.dm}),
 			want: []string{events.MessageCreate + ":" + f.dm.String()}},
+		// reactions follow the messages of the channel (ADR-0037)
+		{name: "reaction in a visible channel", in: ev(gt, events.ReactionAdd, msgIn(f.general.ID)),
+			want: []string{events.ReactionAdd + ":" + f.general.ID.String()}},
+		{name: "reaction in a hidden channel is dropped", in: ev(gt, events.ReactionAdd, msgIn(f.secret.ID))},
+		{name: "reaction removed in a hidden channel is dropped", in: ev(gt, events.ReactionRemove, msgIn(f.secret.ID))},
+		{name: "emoji cleared in a hidden channel is dropped", in: ev(gt, events.ReactionRemoveEmoji, msgIn(f.secret.ID))},
+		{name: "all cleared in a hidden channel is dropped", in: ev(gt, events.ReactionRemoveAll, msgIn(f.secret.ID))},
+		{name: "all cleared in a visible channel", in: ev(gt, events.ReactionRemoveAll, msgIn(f.general.ID)),
+			want: []string{events.ReactionRemoveAll + ":" + f.general.ID.String()}},
+		{name: "reaction in my DM", in: ev(dmt, events.ReactionAdd, map[string]any{"channel_id": f.dm, "message_id": uuid.New()}),
+			want: []string{events.ReactionAdd + ":" + f.dm.String()}},
+		{name: "reaction in someone else's DM is dropped", in: ev(events.ChannelTopic(uuid.New()), events.ReactionAdd, map[string]any{"channel_id": uuid.New()})},
 		{name: "message in someone else's DM is dropped", in: ev(events.ChannelTopic(uuid.New()), events.MessageCreate, map[string]any{"id": uuid.New()})},
 		{name: "non-message event on a DM topic is dropped", in: ev(dmt, events.ChannelUpdate, map[string]any{"id": f.dm})},
 

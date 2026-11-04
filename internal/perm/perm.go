@@ -42,8 +42,11 @@ const (
 	ManageGuild        Permissions = 1 << 23
 	ViewAuditLog       Permissions = 1 << 24
 	Administrator      Permissions = 1 << 25
+	// PinMessages pins and unpins messages in a channel (ADR-0037). Roles
+	// with MANAGE_MESSAGES got it when it appeared (migration 00016).
+	PinMessages Permissions = 1 << 26
 
-	lastBit = Administrator
+	lastBit = PinMessages
 )
 
 // All is every defined permission.
@@ -74,7 +77,7 @@ var names = []struct {
 	{CreateInvite, "CREATE_INVITE"}, {ChangeNickname, "CHANGE_NICKNAME"}, {ManageNicknames, "MANAGE_NICKNAMES"},
 	{KickMembers, "KICK_MEMBERS"}, {BanMembers, "BAN_MEMBERS"}, {ManageChannels, "MANAGE_CHANNELS"},
 	{ManageRoles, "MANAGE_ROLES"}, {ManageGuild, "MANAGE_GUILD"}, {ViewAuditLog, "VIEW_AUDIT_LOG"},
-	{Administrator, "ADMINISTRATOR"},
+	{Administrator, "ADMINISTRATOR"}, {PinMessages, "PIN_MESSAGES"},
 }
 
 func (p Permissions) String() string {
@@ -206,7 +209,7 @@ func implicit(p Permissions) Permissions {
 }
 
 // dmPermissions is what every recipient may do in a DM or group DM.
-const dmPermissions = ViewChannel | SendMessages | ReadMessageHistory | AttachFiles | AddReactions |
+const dmPermissions = ViewChannel | SendMessages | ReadMessageHistory | AttachFiles | AddReactions | PinMessages |
 	Connect | Speak | Video | Stream | UseVoiceActivity
 
 // InDM returns a user's permissions in a direct-message channel. A blocked

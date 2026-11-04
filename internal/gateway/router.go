@@ -160,8 +160,16 @@ func (r *router) route(ctx context.Context, ev event) (routed, error) {
 
 func forward(ev event) routed { return routed{out: []dispatch{{T: ev.Type, D: ev.Data}}} }
 
+// isMessage reports events about the content of a channel: its messages and
+// their reactions. They are written without the guild lock and reach those
+// who see the channel.
 func isMessage(t string) bool {
-	return t == events.MessageCreate || t == events.MessageUpdate || t == events.MessageDelete
+	switch t {
+	case events.MessageCreate, events.MessageUpdate, events.MessageDelete,
+		events.ReactionAdd, events.ReactionRemove, events.ReactionRemoveEmoji, events.ReactionRemoveAll:
+		return true
+	}
+	return false
 }
 
 func isCall(t string) bool {
@@ -386,7 +394,8 @@ func (r *router) applyGuildEvent(guildID uuid.UUID, g *guildState, ev event) (ro
 		}
 		return g.voiceState(st), nil
 
-	case events.MessageCreate, events.MessageUpdate, events.MessageDelete:
+	case events.MessageCreate, events.MessageUpdate, events.MessageDelete,
+		events.ReactionAdd, events.ReactionRemove, events.ReactionRemoveEmoji, events.ReactionRemoveAll:
 		var p struct {
 			ChannelID uuid.UUID `json:"channel_id"`
 		}

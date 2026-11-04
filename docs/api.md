@@ -313,6 +313,31 @@ nonce?, reply_to?, mention_everyone, mentions, mention_roles, attachments, creat
 События: `MESSAGE_CREATE`, `MESSAGE_UPDATE`, `MESSAGE_DELETE {id, channel_id, guild_id?}`
 в топик сервера или `channel.<id>` для личек.
 
+### Реакции и закрепления (ADR-0037)
+
+| Метод и путь | Ответ | Права |
+|---|---|---|
+| `PUT /channels/{id}/messages/{message_id}/reactions/{emoji}/@me` | 204 | новый эмодзи — `ADD_REACTIONS`, уже стоящий — `READ_MESSAGE_HISTORY` (в личке всегда `ADD_REACTIONS`) |
+| `DELETE /channels/{id}/messages/{message_id}/reactions/{emoji}/@me` | 204 | свою |
+| `GET /channels/{id}/messages/{message_id}/reactions/{emoji}?limit=` | 200, пользователи, первые поставившие первыми (до 100, по умолчанию 25) | `READ_MESSAGE_HISTORY` |
+| `DELETE /channels/{id}/messages/{message_id}/reactions/{emoji}` | 204 | `MANAGE_MESSAGES` |
+| `DELETE /channels/{id}/messages/{message_id}/reactions` | 204 | `MANAGE_MESSAGES` |
+| `GET /channels/{id}/pins` | 200, сообщения, последние закреплённые первыми | `READ_MESSAGE_HISTORY` |
+| `PUT /channels/{id}/pins/{message_id}` | 204 | `PIN_MESSAGES` |
+| `DELETE /channels/{id}/pins/{message_id}` | 204 | `PIN_MESSAGES` |
+
+- `{emoji}` — один эмодзи Unicode в пути (URL-кодирование), с тоном кожи
+  или без; иначе 422. Не больше 20 разных эмодзи под сообщением (422).
+- Лимит: 20 реакций за 5 секунд на пользователя.
+- В истории и закреплённых у сообщения `reactions: [{emoji, count, me}]` и
+  `pinned_at`. В событиях сообщения `reactions: null` — клиент оставляет
+  свои.
+- События в топик канала: `MESSAGE_REACTION_ADD` и `MESSAGE_REACTION_REMOVE`
+  `{channel_id, guild_id?, message_id, emoji, user_id}`,
+  `MESSAGE_REACTION_REMOVE_EMOJI` `{…, emoji}`, `MESSAGE_REACTION_REMOVE_ALL`
+  `{channel_id, guild_id?, message_id}`. Закрепление — `MESSAGE_UPDATE`.
+- До 250 закреплённых в канале (422).
+
 ### «Печатает»
 
 `POST /channels/{id}/typing` → 204. Нужно право `SEND_MESSAGES` в канале (как

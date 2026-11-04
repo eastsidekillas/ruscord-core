@@ -16,7 +16,7 @@ func TestBitValuesAreStable(t *testing.T) {
 		StreamHQ: 2048, UseVoiceActivity: 4096, MuteMembers: 8192, DeafenMembers: 16384, MoveMembers: 32768,
 		CreateInvite: 65536, ChangeNickname: 131072, ManageNicknames: 262144, KickMembers: 524288,
 		BanMembers: 1048576, ManageChannels: 2097152, ManageRoles: 4194304, ManageGuild: 8388608,
-		ViewAuditLog: 16777216, Administrator: 33554432,
+		ViewAuditLog: 16777216, Administrator: 33554432, PinMessages: 67108864,
 	}
 	for p, v := range golden {
 		if uint64(p) != v {
@@ -26,7 +26,7 @@ func TestBitValuesAreStable(t *testing.T) {
 	if len(golden) != len(names) {
 		t.Errorf("golden table has %d entries, names has %d: add the new bit to both", len(golden), len(names))
 	}
-	if uint64(All) != 1<<26-1 {
+	if uint64(All) != 1<<27-1 {
 		t.Errorf("All = %b", uint64(All))
 	}
 }
@@ -238,6 +238,10 @@ func TestInDM(t *testing.T) {
 	}
 	if ok.Has(ManageMessages) || ok.Has(StreamHQ) {
 		t.Errorf("DM must not grant moderation or HQ stream: %s", ok)
+	}
+	// Anyone in a DM may react and pin; a block takes both away.
+	if !ok.Has(AddReactions|PinMessages) || blocked.Has(AddReactions) || blocked.Has(PinMessages) {
+		t.Errorf("reactions and pins in DMs: ok %s, blocked %s", ok, blocked)
 	}
 }
 
