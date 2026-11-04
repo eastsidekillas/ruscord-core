@@ -16,6 +16,7 @@ import (
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
 
+	"github.com/eastsidekillas/ruscord-core/internal/platform/store"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/testdb"
 )
 
@@ -141,7 +142,7 @@ func (r *refs) set(keys ...string) {
 	r.used.Store(m)
 }
 
-func (r *refs) check(_ context.Context, key string) (bool, error) {
+func (r *refs) check(_ context.Context, _ store.DB, key string) (bool, error) {
 	m, _ := r.used.Load().(map[string]bool)
 	return m[key], nil
 }

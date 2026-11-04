@@ -49,7 +49,9 @@ func (e *Env) Sweep() {
 	if _, err := e.PG.Exec(e.T.Context(), `UPDATE blob_garbage SET delete_after = now() - interval '1 second'`); err != nil {
 		e.T.Fatal(err)
 	}
-	if _, err := e.Files.Sweep(e.T.Context()); err != nil {
+	ctx, cancel := e.context()
+	defer cancel()
+	if _, err := e.Files.Sweep(ctx); err != nil {
 		e.T.Fatal(err)
 	}
 }

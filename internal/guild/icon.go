@@ -12,6 +12,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/imaging"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/store"
 )
 
 // WithFiles enables guild icons and registers their reference check with
@@ -75,8 +76,8 @@ func canManage(a access) error {
 }
 
 // iconInUse is the blob collector's reference check for guild icons.
-func (s *Service) iconInUse(ctx context.Context, key string) (bool, error) {
+func (s *Service) iconInUse(ctx context.Context, q store.DB, key string) (bool, error) {
 	var used bool
-	err := s.pg.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM guilds WHERE icon = $1)`, key).Scan(&used)
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM guilds WHERE icon = $1)`, key).Scan(&used)
 	return used, err
 }

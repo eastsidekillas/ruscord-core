@@ -12,6 +12,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/imaging"
+	pgstore "github.com/eastsidekillas/ruscord-core/internal/platform/store"
 	"github.com/eastsidekillas/ruscord-core/internal/presence"
 )
 
@@ -123,6 +124,15 @@ type current struct {
 // public user). The lock orders concurrent changes of one user, so their
 // events leave in the order of their effects.
 func (s *Service) change(ctx context.Context, id uuid.UUID, apply func(tx pgx.Tx, cur current) (bool, error)) (User, error) {
+	// The guilds to tell are read before the transaction: guild reads
+	// through its own pool (R1 of docs/audit/2026-11-04.md).
+	var guilds []uuid.UUID
+	if s.guilds != nil {
+		var err error
+		if guilds, err = s.guilds.GuildIDs(ctx, id); err != nil {
+			return User{}, err
+		}
+	}
 	var u User
 	err := pgx.BeginFunc(ctx, s.store.pg, func(tx pgx.Tx) error {
 		var cur current
@@ -142,11 +152,7 @@ func (s *Service) change(ctx context.Context, id uuid.UUID, apply func(tx pgx.Tx
 			return err
 		}
 		evs := []events.Event{{Topic: events.UserTopic(id), Type: events.UserUpdate, Data: u}}
-		if public && s.guilds != nil {
-			guilds, err := s.guilds.GuildIDs(ctx, id)
-			if err != nil {
-				return err
-			}
+		if public {
 			pub := map[string]PublicUser{"user": u.Public()}
 			for _, g := range guilds {
 				evs = append(evs, events.Event{Topic: events.GuildTopic(g), Type: events.UserProfileUpdate, Data: pub})
@@ -168,8 +174,8 @@ func (s *Service) Bio(ctx context.Context, id uuid.UUID) (string, error) {
 }
 
 // avatarInUse is the blob collector's reference check for avatars.
-func (s *Service) avatarInUse(ctx context.Context, key string) (bool, error) {
+func (s *Service) avatarInUse(ctx context.Context, q pgstore.DB, key string) (bool, error) {
 	var used bool
-	err := s.store.pg.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE avatar = $1)`, key).Scan(&used)
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE avatar = $1)`, key).Scan(&used)
 	return used, err
 }
