@@ -206,6 +206,8 @@ func TestRoute(t *testing.T) {
 		{name: "left a group", in: ev(ut, events.ChannelDelete, map[string]any{"id": f.dm}), want: []string{events.ChannelDelete + ":" + f.dm.String()}, resubscribe: true},
 		{name: "group renamed", in: ev(ut, events.ChannelUpdate, map[string]any{"id": f.dm}), want: []string{events.ChannelUpdate + ":" + f.dm.String()}},
 		{name: "recipient added", in: ev(ut, events.RecipientAdd, map[string]any{"channel_id": f.dm}), want: []string{events.RecipientAdd + ":-"}},
+		{name: "my read mark moved", in: ev(ut, events.MessageAck, map[string]any{"channel_id": f.general.ID, "message_id": uuid.New()}),
+			want: []string{events.MessageAck + ":-"}},
 		{name: "friend request", in: ev(ut, events.RelationshipAdd, map[string]any{"id": f.other, "type": 3}), want: []string{events.RelationshipAdd + ":" + f.other.String()}},
 		{name: "friend removed", in: ev(ut, events.RelationshipRemove, map[string]any{"id": f.other, "type": 1}), want: []string{events.RelationshipRemove + ":" + f.other.String()}},
 

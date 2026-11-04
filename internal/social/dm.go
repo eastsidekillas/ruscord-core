@@ -266,6 +266,15 @@ func (s *Service) CreateGroup(ctx context.Context, me uuid.UUID, in GroupInput) 
 }
 
 // ListDMs returns the caller's DM channels, newest first.
+// ChannelIDs lists the DMs and groups me is in.
+func (s *Service) ChannelIDs(ctx context.Context, me uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.pg.Query(ctx, `SELECT channel_id FROM dm_recipients WHERE user_id = $1`, me)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+}
+
 func (s *Service) ListDMs(ctx context.Context, me uuid.UUID) ([]DM, error) {
 	rows, err := s.pg.Query(ctx,
 		dmSelect+`WHERE c.id IN (SELECT channel_id FROM dm_recipients WHERE user_id = $1)

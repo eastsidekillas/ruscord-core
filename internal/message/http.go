@@ -35,6 +35,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"GET /api/v1/channels/{channel}/pins":                                        h.pins,
 		"PUT /api/v1/channels/{channel}/pins/{message}":                              h.pin,
 		"DELETE /api/v1/channels/{channel}/pins/{message}":                           h.unpin,
+
+		"GET /api/v1/users/@me/read-states":                      h.readStates,
+		"POST /api/v1/channels/{channel}/messages/{message}/ack": h.ack,
+		"POST /api/v1/guilds/{guild}/ack":                        h.ackGuild,
 	}
 	for pattern, fn := range routes {
 		mux.Handle(pattern, h.requireAuth(httpx.Handle(fn)))
@@ -123,6 +127,31 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return httpx.NoContent(w, h.svc.Delete(r.Context(), auth.UserID(r), ch, id))
+}
+
+func (h *Handler) readStates(w http.ResponseWriter, r *http.Request) error {
+	states, err := h.svc.ReadStates(r.Context(), auth.UserID(r))
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, states)
+	return nil
+}
+
+func (h *Handler) ack(w http.ResponseWriter, r *http.Request) error {
+	ch, id, err := h.ids(r)
+	if err != nil {
+		return err
+	}
+	return httpx.NoContent(w, h.svc.Ack(r.Context(), auth.UserID(r), ch, id))
+}
+
+func (h *Handler) ackGuild(w http.ResponseWriter, r *http.Request) error {
+	g, err := httpx.PathUUID(r, "guild")
+	if err != nil {
+		return err
+	}
+	return httpx.NoContent(w, h.svc.AckGuild(r.Context(), auth.UserID(r), g))
 }
 
 func (h *Handler) react(w http.ResponseWriter, r *http.Request) error {

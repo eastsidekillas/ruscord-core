@@ -182,7 +182,7 @@ type idPayload struct {
 
 func (r *router) userEvent(ctx context.Context, ev event) (routed, error) {
 	switch ev.Type {
-	case events.RecipientAdd, events.RecipientRemove, events.ChannelUpdate:
+	case events.RecipientAdd, events.RecipientRemove, events.ChannelUpdate, events.MessageAck:
 		return forward(ev), nil
 
 	case events.RelationshipAdd, events.RelationshipRemove:

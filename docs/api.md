@@ -338,6 +338,25 @@ nonce?, reply_to?, mention_everyone, mentions, mention_roles, attachments, creat
   `{channel_id, guild_id?, message_id}`. Закрепление — `MESSAGE_UPDATE`.
 - До 250 закреплённых в канале (422).
 
+### Непрочитанное (ADR-0038)
+
+| Метод и путь | Ответ | Права |
+|---|---|---|
+| `GET /users/@me/read-states` | 200, `[{channel_id, last_read_id, last_message_id, mention_count}]` | каналы с `READ_MESSAGE_HISTORY` и все лички |
+| `POST /channels/{id}/messages/{message_id}/ack` | 204 | `READ_MESSAGE_HISTORY` |
+| `POST /guilds/{id}/ack` | 204, все читаемые каналы сервера прочитаны | участник |
+
+- `last_read_id` — последнее прочитанное сообщение (null — канал не
+  открывали), `last_message_id` — последнее в канале (null — пусто).
+  Непрочитанное есть, если `last_message_id` новее `last_read_id`.
+- `mention_count` — сколько из последних 100 непрочитанных сообщений
+  пингуют пользователя (по имени, ответом, его ролью, `@everyone`/`@here`);
+  свои не считаются. Клиент показывает «99+».
+- Отметка двигается только вперёд; своё отправленное сообщение сразу
+  прочитано. Лимит: 30 отметок за 10 с, лишние молча игнорируются (204).
+- Событие `MESSAGE_ACK {channel_id, message_id}` в топик пользователя, когда
+  отметка сдвинулась: другие вкладки снимают непрочитанное.
+
 ### «Печатает»
 
 `POST /channels/{id}/typing` → 204. Нужно право `SEND_MESSAGES` в канале (как
