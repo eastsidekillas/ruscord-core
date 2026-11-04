@@ -1,6 +1,7 @@
 package imaging
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -35,7 +36,7 @@ func Store(ctx context.Context, files *blob.Collector, kind string, owner uuid.U
 		return "", err
 	}
 	key := blob.Key(kind, owner, img, ext)
-	if err := files.Upload(ctx, key, img); err != nil {
+	if err := files.Upload(ctx, key, bytes.NewReader(img), int64(len(img))); err != nil {
 		return "", err
 	}
 	return key, nil

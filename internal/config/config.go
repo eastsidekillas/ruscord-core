@@ -44,6 +44,10 @@ type Config struct {
 	S3Bucket    string
 	S3AccessKey string
 	S3SecretKey string
+	// CDNSecret signs links to attachments (ADR-0036); every API process
+	// needs the same one. Empty in dev means an ephemeral secret: links
+	// break on restart.
+	CDNSecret string
 
 	LiveKitURL       string
 	LiveKitAPIKey    string
@@ -103,6 +107,7 @@ func load(getenv func(string) string) (Config, error) {
 		S3Bucket:         get("RUSCORD_S3_BUCKET", "ruscord"),
 		S3AccessKey:      get("RUSCORD_S3_ACCESS_KEY", ""),
 		S3SecretKey:      get("RUSCORD_S3_SECRET_KEY", ""),
+		CDNSecret:        get("RUSCORD_CDN_SECRET", ""),
 		LiveKitURL:       get("RUSCORD_LIVEKIT_URL", "ws://127.0.0.1:7880"),
 		MetricsAddr:      get("RUSCORD_METRICS_ADDR", "127.0.0.1:9090"),
 		LiveKitAPIKey:    get("RUSCORD_LIVEKIT_API_KEY", ""),
@@ -168,6 +173,7 @@ func load(getenv func(string) string) (Config, error) {
 			"RUSCORD_LIVEKIT_API_SECRET": c.LiveKitAPISecret,
 			"RUSCORD_S3_ACCESS_KEY":      c.S3AccessKey,
 			"RUSCORD_S3_SECRET_KEY":      c.S3SecretKey,
+			"RUSCORD_CDN_SECRET":         c.CDNSecret,
 		} {
 			if val == "" {
 				errs = append(errs, fmt.Errorf("%s: required outside dev", key))
@@ -175,6 +181,9 @@ func load(getenv func(string) string) (Config, error) {
 		}
 		if len(c.LiveKitAPISecret) > 0 && len(c.LiveKitAPISecret) < 32 {
 			errs = append(errs, errors.New("RUSCORD_LIVEKIT_API_SECRET: must be at least 32 characters"))
+		}
+		if len(c.CDNSecret) > 0 && len(c.CDNSecret) < 32 {
+			errs = append(errs, errors.New("RUSCORD_CDN_SECRET: must be at least 32 characters"))
 		}
 	}
 

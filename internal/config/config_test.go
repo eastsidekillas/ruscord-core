@@ -72,7 +72,7 @@ func TestLoadRequiresSecretsOutsideDev(t *testing.T) {
 		t.Fatal("expected error for missing secrets in prod")
 	}
 	for _, key := range []string{"RUSCORD_JWT_ED25519_SEED", "RUSCORD_REDIS_PASSWORD", "RUSCORD_LIVEKIT_API_KEY", "RUSCORD_LIVEKIT_API_SECRET",
-		"RUSCORD_S3_ACCESS_KEY", "RUSCORD_S3_SECRET_KEY"} {
+		"RUSCORD_S3_ACCESS_KEY", "RUSCORD_S3_SECRET_KEY", "RUSCORD_CDN_SECRET"} {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error does not mention %s: %v", key, err)
 		}
@@ -89,6 +89,13 @@ func TestLoadRejectsShortLiveKitSecret(t *testing.T) {
 	}))
 	if err == nil || !strings.Contains(err.Error(), "at least 32") {
 		t.Fatalf("expected short secret error, got %v", err)
+	}
+}
+
+func TestLoadRejectsShortCDNSecret(t *testing.T) {
+	_, err := load(env(map[string]string{"RUSCORD_ENV": "staging", "RUSCORD_CDN_SECRET": "short"}))
+	if err == nil || !strings.Contains(err.Error(), "RUSCORD_CDN_SECRET: must be at least 32") {
+		t.Fatalf("expected short CDN secret error, got %v", err)
 	}
 }
 

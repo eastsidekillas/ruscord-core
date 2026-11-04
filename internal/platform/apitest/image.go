@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"net/http"
 )
 
@@ -83,11 +84,23 @@ type OutboxEvent struct {
 // returns the status and headers.
 func (e *Env) Fetch(path string) (int, http.Header) {
 	e.T.Helper()
+	code, h, _ := e.FetchRange(path, "")
+	return code, h
+}
+
+// FetchRange is Fetch with a Range header (none if empty) that also
+// returns the body.
+func (e *Env) FetchRange(path, rng string) (int, http.Header, []byte) {
+	e.T.Helper()
 	req, _ := http.NewRequestWithContext(e.T.Context(), http.MethodGet, e.srv.URL+path, nil)
+	if rng != "" {
+		req.Header.Set("Range", rng)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		e.T.Fatal(err)
 	}
-	_ = resp.Body.Close()
-	return resp.StatusCode, resp.Header
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, resp.Header, body
 }
