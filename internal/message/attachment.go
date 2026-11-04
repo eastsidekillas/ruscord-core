@@ -83,7 +83,7 @@ func cleanFilename(name string) (string, error) {
 		}
 		return r
 	}, name)
-	if name == "" || name == "." || name == "/" || utf8.RuneCountInString(name) > maxFilename {
+	if name == "" || name == "." || name == ".." || name == "/" || utf8.RuneCountInString(name) > maxFilename {
 		return "", errBadFilename
 	}
 	return name, nil

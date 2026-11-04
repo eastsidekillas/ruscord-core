@@ -136,7 +136,13 @@ func (s *S3) Open(ctx context.Context, key, rng string) (*Object, error) {
 		}
 		return nil, fmt.Errorf("blob: get %s: %w", key, err)
 	}
-	return &Object{Body: out.Body, Size: aws.ToInt64(out.ContentLength), Range: aws.ToString(out.ContentRange)}, nil
+	o := &Object{Body: out.Body, Size: aws.ToInt64(out.ContentLength)}
+	// Some servers send Content-Range for whole objects too; a range is
+	// partial only when one was asked for.
+	if rng != "" {
+		o.Range = aws.ToString(out.ContentRange)
+	}
+	return o, nil
 }
 
 func (s *S3) Delete(ctx context.Context, key string) error {
