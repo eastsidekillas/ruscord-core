@@ -148,3 +148,22 @@ func TestAutoMigrateDefaultsToDevOnly(t *testing.T) {
 		t.Error("prod must not auto-migrate by default")
 	}
 }
+
+func TestLoadPGMaxConns(t *testing.T) {
+	for _, tt := range []struct {
+		in   string
+		want int32
+		bad  bool
+	}{
+		{in: "", want: 20},
+		{in: "50", want: 50},
+		{in: "1", bad: true},
+		{in: "many", bad: true},
+		{in: "99999999999", bad: true},
+	} {
+		c, err := load(env(map[string]string{"RUSCORD_PG_MAX_CONNS": tt.in}))
+		if tt.bad != (err != nil) || (!tt.bad && c.PGMaxConns != tt.want) {
+			t.Errorf("%q: %d, %v", tt.in, c.PGMaxConns, err)
+		}
+	}
+}

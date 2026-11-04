@@ -20,6 +20,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/imaging"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/store"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
 
@@ -147,10 +148,16 @@ func (s *Service) Upload(ctx context.Context, userID, channelID uuid.UUID, filen
 	if err := s.files.Upload(ctx, a.key(), f, size); err != nil {
 		return Attachment{}, err
 	}
-	_, err = s.pg.Exec(ctx,
-		`INSERT INTO attachments (id, channel_id, uploader_id, filename, size, ext, content_type, width, height)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		a.ID, channelID, userID, a.Filename, a.Size, a.ext, a.ContentType, a.Width, a.Height)
+	err = pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
+		if err := s.lockChannel(ctx, tx, ch); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx,
+			`INSERT INTO attachments (id, channel_id, uploader_id, filename, size, ext, content_type, width, height)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			a.ID, channelID, userID, a.Filename, a.Size, a.ext, a.ContentType, a.Width, a.Height)
+		return err
+	})
 	return a, err
 }
 
@@ -245,18 +252,18 @@ func dropAttachments(ctx context.Context, tx pgx.Tx, where string, arg any) erro
 // attachmentInUse is the blob collector's reference check for attachments.
 // It also drops the row of an upload nobody attached in time: its file is
 // what the collector is about to delete.
-func (s *Service) attachmentInUse(ctx context.Context, key string) (bool, error) {
+func (s *Service) attachmentInUse(ctx context.Context, q store.DB, key string) (bool, error) {
 	id, err := uuid.Parse(strings.TrimSuffix(path.Base(key), "."+blob.Ext(key)))
 	if err != nil {
 		return false, nil //nolint:nilerr // not a key this module made: nothing refers to it
 	}
-	if _, err := s.pg.Exec(ctx,
+	if _, err := q.Exec(ctx,
 		`DELETE FROM attachments WHERE id = $1 AND message_id IS NULL AND created_at <= now() - $2::interval`,
 		id, interval(attachWindow)); err != nil {
 		return false, err
 	}
 	var used bool
-	err = s.pg.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM attachments WHERE id = $1)`, id).Scan(&used)
+	err = q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM attachments WHERE id = $1)`, id).Scan(&used)
 	return used, err
 }
 

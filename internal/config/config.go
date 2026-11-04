@@ -32,7 +32,9 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	LogLevel        string
 
-	PostgresURL   string
+	PostgresURL string
+	// PGMaxConns is the size of the Postgres pool of the process.
+	PGMaxConns    int32
 	RedisAddr     string
 	RedisPassword string
 	NATSURL       string
@@ -158,6 +160,12 @@ func load(getenv func(string) string) (Config, error) {
 		errs = append(errs, err)
 	}
 	c.Roles = roles
+
+	conns, err := strconv.ParseInt(get("RUSCORD_PG_MAX_CONNS", "20"), 10, 32)
+	if err != nil || conns < 2 {
+		errs = append(errs, errors.New("RUSCORD_PG_MAX_CONNS: must be an integer, at least 2"))
+	}
+	c.PGMaxConns = int32(conns)
 
 	timeout, err := strconv.Atoi(get("RUSCORD_SHUTDOWN_TIMEOUT_SEC", "15"))
 	if err != nil || timeout <= 0 {

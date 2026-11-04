@@ -68,6 +68,12 @@ type Presences interface {
 // WithPresences makes the member list carry statuses (small guilds only).
 func (s *Service) WithPresences(p Presences) { s.presences = p }
 
+// LockChannels holds guild channels against deletion until tx ends and
+// returns those that exist (hooks.LockChannels).
+func (s *Service) LockChannels(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) ([]uuid.UUID, error) {
+	return hooks.LockChannels(ctx, tx, "channels", ids)
+}
+
 // OnChannelsDeleted registers the hook run when channels are deleted
 // (one channel, or every channel of a deleted guild).
 func (s *Service) OnChannelsDeleted(h hooks.ChannelsDeleted) { s.channelsDeleted = h }
@@ -285,6 +291,9 @@ func (s *Service) Delete(ctx context.Context, userID, guildID uuid.UUID) error {
 		if err != nil {
 			return err
 		}
+		if err := hooks.LockForDelete(ctx, tx, "channels", ids); err != nil {
+			return err
+		}
 		if err := s.channelsDeleted.Run(ctx, tx, ids); err != nil {
 			return err
 		}
@@ -498,6 +507,9 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 		}
 		if ch.Type == ChannelVoice {
 			voiceRoom = []uuid.UUID{ch.ID}
+		}
+		if err := hooks.LockForDelete(ctx, tx, "channels", []uuid.UUID{ch.ID}); err != nil {
+			return err
 		}
 		if err := s.channelsDeleted.Run(ctx, tx, []uuid.UUID{ch.ID}); err != nil {
 			return err

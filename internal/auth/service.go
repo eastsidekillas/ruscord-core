@@ -56,7 +56,9 @@ type Service struct {
 	tickets *Tickets
 	revoked *Revocations
 	files   *blob.Collector
-	guilds  GuildIDs // for profile fan-out; nil means none
+	// lookup serves Users to other modules (see Deps.Lookup).
+	lookup *pgxpool.Pool
+	guilds GuildIDs // for profile fan-out; nil means none
 	// cleanups run after an account is deleted (OnAccountDeleted).
 	cleanups []AccountCleanup
 	now      func() time.Time
@@ -71,7 +73,13 @@ type Deps struct {
 	Revoked *Revocations
 	// Files stores avatars; nil disables avatar uploads (503).
 	Files *blob.Collector
-	Now   func() time.Time // nil means time.Now
+	// Lookup is a pool of its own for Users, which other modules call
+	// inside their transactions: a transaction holding a connection of PG
+	// then waits only for a lookup connection, and those are never held
+	// while waiting, so every PG connection can be busy without the API
+	// stopping (R1 of docs/audit/2026-11-04.md). nil means PG.
+	Lookup *pgxpool.Pool
+	Now    func() time.Time // nil means time.Now
 }
 
 func NewService(ctx context.Context, d Deps) (*Service, error) {
@@ -90,7 +98,11 @@ func NewService(ctx context.Context, d Deps) (*Service, error) {
 		tickets: d.Tickets,
 		revoked: d.Revoked,
 		files:   d.Files,
+		lookup:  d.Lookup,
 		now:     now,
+	}
+	if s.lookup == nil {
+		s.lookup = d.PG
 	}
 	if d.Files != nil {
 		d.Files.Register(blob.KindAvatar, s.avatarInUse)
