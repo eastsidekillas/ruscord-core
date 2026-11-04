@@ -19,8 +19,9 @@ import (
 
 type env struct {
 	*apitest.Env
-	guilds  *guild.Service
-	socials *social.Service
+	guilds   *guild.Service
+	socials  *social.Service
+	messages *Service
 }
 
 func newEnv(t *testing.T) *env {
@@ -32,8 +33,10 @@ func newEnv(t *testing.T) *env {
 	socials.OnChannelsDeleted(DeleteChannels)
 	guild.NewHandler(guilds, e.RequireAuth).Register(e.Mux)
 	social.NewHandler(socials, e.RequireAuth).Register(e.Mux)
-	NewHandler(NewService(e.PG, e.Auth, guilds, socials, e.Limiter, e.Eph), e.RequireAuth).Register(e.Mux)
-	return &env{Env: e, guilds: guilds, socials: socials}
+	messages := NewService(e.PG, e.Auth, guilds, socials, e.Limiter, e.Eph)
+	messages.WithFiles(e.Files, e.CDN)
+	NewHandler(messages, e.RequireAuth).Register(e.Mux)
+	return &env{Env: e, guilds: guilds, socials: socials, messages: messages}
 }
 
 var (

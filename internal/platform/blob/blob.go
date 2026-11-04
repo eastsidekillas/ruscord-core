@@ -1,9 +1,9 @@
-// Package blob stores files (avatars, guild icons) in S3-compatible object
-// storage and collects the ones nothing refers to any more
-// (docs/adr/0019-files.md).
+// Package blob stores files (avatars, guild icons, attachments) in
+// S3-compatible object storage and collects the ones nothing refers to any
+// more (docs/adr/0019-files.md, docs/adr/0036-attachments.md).
 //
-// Keys are content-addressed and never reused for other content, so an
-// object is immutable once written and may be cached forever.
+// Keys are never reused for other content, so an object is immutable once
+// written and may be cached forever.
 package blob
 
 import (
@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -22,20 +24,60 @@ import (
 	"github.com/aws/smithy-go"
 )
 
-var ErrNotFound = errors.New("blob: not found")
+var (
+	ErrNotFound = errors.New("blob: not found")
+	// ErrRange is a byte range outside the object (HTTP 416).
+	ErrRange = errors.New("blob: range not satisfiable")
+)
 
 // Store is object storage. Implementations: S3 for real deployments,
 // Memory for tests.
 type Store interface {
-	Put(ctx context.Context, key string, body []byte, contentType string) error
-	// Get returns the object's content; ErrNotFound if it does not exist.
-	Get(ctx context.Context, key string) ([]byte, error)
+	// Put stores size bytes of body. The body is seekable so that S3 can
+	// sign it without holding it in memory.
+	Put(ctx context.Context, key string, body io.ReadSeeker, size int64, contentType string) error
+	// Open reads the object, or the byte range rng of it ("bytes=0-99", ""
+	// for all); ErrNotFound if it does not exist, ErrRange if rng is outside.
+	// The caller closes the body.
+	Open(ctx context.Context, key, rng string) (*Object, error)
 	// Delete removes an object; deleting a missing object is not an error.
 	Delete(ctx context.Context, key string) error
 	// Ping checks that the store is reachable and the bucket exists.
 	Ping(ctx context.Context) error
 	// List calls fn with every key, in no particular order.
 	List(ctx context.Context, fn func(key string) error) error
+}
+
+// Object is an opened object or a range of it.
+type Object struct {
+	Body io.ReadCloser
+	// Size is the length of Body.
+	Size int64
+	// Range is the Content-Range of a partial read ("bytes 0-99/1000"),
+	// empty when Body is the whole object.
+	Range string
+}
+
+// PutBytes stores a small object held in memory.
+func PutBytes(ctx context.Context, s Store, key string, body []byte, contentType string) error {
+	return s.Put(ctx, key, bytes.NewReader(body), int64(len(body)), contentType)
+}
+
+// ReadAll reads a whole object of at most limit bytes into memory.
+func ReadAll(ctx context.Context, s Store, key string, limit int64) ([]byte, error) {
+	o, err := s.Open(ctx, key, "")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = o.Body.Close() }()
+	b, err := io.ReadAll(io.LimitReader(o.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("blob: read %s: %w", key, err)
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("blob: %s is larger than %d bytes", key, limit)
+	}
+	return b, nil
 }
 
 // S3Config addresses a bucket on an S3-compatible server.
@@ -64,12 +106,12 @@ func NewS3(cfg S3Config) *S3 {
 	return &S3{c: c, bucket: cfg.Bucket}
 }
 
-func (s *S3) Put(ctx context.Context, key string, body []byte, contentType string) error {
+func (s *S3) Put(ctx context.Context, key string, body io.ReadSeeker, size int64, contentType string) error {
 	_, err := s.c.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(s.bucket),
 		Key:           aws.String(key),
-		Body:          bytes.NewReader(body),
-		ContentLength: aws.Int64(int64(len(body))),
+		Body:          body,
+		ContentLength: aws.Int64(size),
 		ContentType:   aws.String(contentType),
 	})
 	if err != nil {
@@ -78,26 +120,29 @@ func (s *S3) Put(ctx context.Context, key string, body []byte, contentType strin
 	return nil
 }
 
-// maxGet bounds what Get reads into memory; stored files are small images.
-const maxGet = 4 << 20
-
-func (s *S3) Get(ctx context.Context, key string) ([]byte, error) {
-	out, err := s.c.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
+func (s *S3) Open(ctx context.Context, key, rng string) (*Object, error) {
+	in := &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)}
+	if rng != "" {
+		in.Range = aws.String(rng)
+	}
+	out, err := s.c.GetObject(ctx, in)
 	if err != nil {
-		if isNotFound(err) {
+		var ae smithy.APIError
+		switch {
+		case isNotFound(err):
 			return nil, ErrNotFound
+		case errors.As(err, &ae) && ae.ErrorCode() == "InvalidRange":
+			return nil, ErrRange
 		}
 		return nil, fmt.Errorf("blob: get %s: %w", key, err)
 	}
-	defer func() { _ = out.Body.Close() }()
-	b, err := io.ReadAll(io.LimitReader(out.Body, maxGet+1))
-	if err != nil {
-		return nil, fmt.Errorf("blob: read %s: %w", key, err)
+	o := &Object{Body: out.Body, Size: aws.ToInt64(out.ContentLength)}
+	// Some servers send Content-Range for whole objects too; a range is
+	// partial only when one was asked for.
+	if rng != "" {
+		o.Range = aws.ToString(out.ContentRange)
 	}
-	if len(b) > maxGet {
-		return nil, fmt.Errorf("blob: %s is larger than %d bytes", key, maxGet)
-	}
-	return b, nil
+	return o, nil
 }
 
 func (s *S3) Delete(ctx context.Context, key string) error {
@@ -176,21 +221,70 @@ func (m *Memory) SetFailDelete(fail bool) {
 
 func NewMemory() *Memory { return &Memory{objs: map[string][]byte{}} }
 
-func (m *Memory) Put(_ context.Context, key string, body []byte, _ string) error {
+func (m *Memory) Put(_ context.Context, key string, body io.ReadSeeker, size int64, _ string) error {
+	b, err := io.ReadAll(io.LimitReader(body, size+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(b)) != size {
+		return fmt.Errorf("blob: put %s: body is %d bytes, not %d", key, len(b), size)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.objs[key] = bytes.Clone(body)
+	m.objs[key] = b
 	return nil
 }
 
-func (m *Memory) Get(_ context.Context, key string) ([]byte, error) {
+func (m *Memory) Open(_ context.Context, key, rng string) (*Object, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	b, ok := m.objs[key]
+	m.mu.Unlock()
 	if !ok {
 		return nil, ErrNotFound
 	}
-	return bytes.Clone(b), nil
+	if rng == "" {
+		return &Object{Body: io.NopCloser(bytes.NewReader(b)), Size: int64(len(b))}, nil
+	}
+	start, end, ok := parseRange(rng, int64(len(b)))
+	if !ok {
+		return nil, ErrRange
+	}
+	return &Object{
+		Body:  io.NopCloser(bytes.NewReader(b[start : end+1])),
+		Size:  end - start + 1,
+		Range: fmt.Sprintf("bytes %d-%d/%d", start, end, len(b)),
+	}, nil
+}
+
+// parseRange reads one range of a Range header ("bytes=a-b", "bytes=a-",
+// "bytes=-n") against an object of size bytes, as S3 does.
+func parseRange(rng string, size int64) (start, end int64, ok bool) {
+	spec, found := strings.CutPrefix(rng, "bytes=")
+	a, b, dash := strings.Cut(spec, "-")
+	if !found || !dash || strings.Contains(spec, ",") {
+		return 0, 0, false
+	}
+	var err error
+	switch a {
+	case "":
+		var n int64
+		if n, err = strconv.ParseInt(b, 10, 64); err != nil || n <= 0 {
+			return 0, 0, false
+		}
+		start, end = max(size-n, 0), size-1
+	default:
+		if start, err = strconv.ParseInt(a, 10, 64); err != nil {
+			return 0, 0, false
+		}
+		end = size - 1
+		if b != "" {
+			if end, err = strconv.ParseInt(b, 10, 64); err != nil {
+				return 0, 0, false
+			}
+			end = min(end, size-1)
+		}
+	}
+	return start, end, start >= 0 && start <= end && start < size
 }
 
 func (m *Memory) Delete(_ context.Context, key string) error {

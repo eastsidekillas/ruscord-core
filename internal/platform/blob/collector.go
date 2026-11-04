@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -65,12 +66,20 @@ type execer interface {
 // it. If the sweep already holds the row, Schedule waits for it, and the
 // upload that follows writes the object again.
 func Schedule(ctx context.Context, q execer, key string, grace time.Duration) error {
+	return ScheduleAll(ctx, q, []string{key}, grace)
+}
+
+// ScheduleAll is Schedule for many keys in one statement.
+func ScheduleAll(ctx context.Context, q execer, keys []string, grace time.Duration) error {
+	if len(keys) == 0 {
+		return nil
+	}
 	_, err := q.Exec(ctx,
-		`INSERT INTO blob_garbage (key, delete_after) VALUES ($1, now() + $2::interval)
+		`INSERT INTO blob_garbage (key, delete_after) SELECT DISTINCT k, now() + $2::interval FROM unnest($1::text[]) AS k
 		 ON CONFLICT (key) DO UPDATE SET delete_after = EXCLUDED.delete_after, lease = NULL`,
-		key, fmt.Sprintf("%d seconds", int(grace/time.Second)))
+		keys, fmt.Sprintf("%d seconds", int(grace/time.Second)))
 	if err != nil {
-		return fmt.Errorf("blob: schedule %s: %w", key, err)
+		return fmt.Errorf("blob: schedule %s: %w", keys[0], err)
 	}
 	return nil
 }
@@ -78,11 +87,11 @@ func Schedule(ctx context.Context, q execer, key string, grace time.Duration) er
 // Upload stores a new object safely: it is scheduled first, so if the
 // transaction that should refer to it never commits, the collector removes
 // it; if the transaction commits, the reference keeps it.
-func (c *Collector) Upload(ctx context.Context, key string, body []byte) error {
+func (c *Collector) Upload(ctx context.Context, key string, body io.ReadSeeker, size int64) error {
 	if err := Schedule(ctx, c.pg, key, UploadGrace); err != nil {
 		return err
 	}
-	return c.store.Put(ctx, key, body, ContentType(key[strings.LastIndexByte(key, '.')+1:]))
+	return c.store.Put(ctx, key, body, size, ContentType(Ext(key)))
 }
 
 // Run sweeps every interval until ctx is done.

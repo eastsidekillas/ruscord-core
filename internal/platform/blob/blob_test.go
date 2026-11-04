@@ -43,13 +43,13 @@ func TestS3(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := Key(KindAvatar, uuid.New(), []byte("img"), ExtPNG)
-	if _, err := s.Get(ctx, key); !errors.Is(err, ErrNotFound) {
+	if _, err := ReadAll(ctx, s, key, 1<<20); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing object: %v, want ErrNotFound", err)
 	}
-	if err := s.Put(ctx, key, []byte("img"), "image/png"); err != nil {
+	if err := PutBytes(ctx, s, key, []byte("img"), "image/png"); err != nil {
 		t.Fatal(err)
 	}
-	if b, err := s.Get(ctx, key); err != nil || string(b) != "img" {
+	if b, err := ReadAll(ctx, s, key, 1<<20); err != nil || string(b) != "img" {
 		t.Fatalf("get = %q, %v", b, err)
 	}
 	if err := s.Delete(ctx, key); err != nil {
@@ -58,7 +58,7 @@ func TestS3(t *testing.T) {
 	if err := s.Delete(ctx, key); err != nil {
 		t.Fatalf("deleting a missing object: %v", err)
 	}
-	if _, err := s.Get(ctx, key); !errors.Is(err, ErrNotFound) {
+	if _, err := ReadAll(ctx, s, key, 1<<20); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("after delete: %v", err)
 	}
 }
@@ -94,11 +94,11 @@ func TestKeys(t *testing.T) {
 func TestHandler(t *testing.T) {
 	store := NewMemory()
 	mux := http.NewServeMux()
-	Register(mux, store, testdb.Logger())
+	Register(mux, store, NewSigner([]byte("test secret")), testdb.Logger())
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	key := Key(KindIcon, uuid.New(), []byte("png bytes"), ExtPNG)
-	_ = store.Put(t.Context(), key, []byte("png bytes"), "image/png")
+	_ = PutBytes(t.Context(), store, key, []byte("png bytes"), "image/png")
 
 	get := func(path string) (int, http.Header) {
 		t.Helper()
@@ -180,7 +180,7 @@ func TestCollector(t *testing.T) {
 		Key(KindAvatar, owner, []byte("failing"), ExtPNG)
 	unknown := Key(KindIcon, owner, []byte("icon"), ExtPNG) // no check registered for icons here
 	for _, k := range []string{kept, orphan, unknown} {
-		if err := c.Upload(ctx, k, []byte("x")); err != nil {
+		if err := c.Upload(ctx, k, strings.NewReader("x"), 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -203,7 +203,7 @@ func TestCollector(t *testing.T) {
 	}
 
 	// A failed delete keeps the row for a retry after the lease.
-	_ = c.Upload(ctx, failing, []byte("x"))
+	_ = c.Upload(ctx, failing, strings.NewReader("x"), 1)
 	store.SetFailDelete(true)
 	due(t, c)
 	_, _ = c.Sweep(ctx)
@@ -227,7 +227,7 @@ func TestCollectorSkipsReuploaded(t *testing.T) {
 	c, store, r := newCollector(t)
 	ctx := t.Context()
 	key := Key(KindAvatar, uuid.New(), []byte("same"), ExtPNG)
-	_ = c.Upload(ctx, key, []byte("same"))
+	_ = c.Upload(ctx, key, strings.NewReader("same"), 4)
 	due(t, c)
 
 	// Take the row like Sweep does, but stop before collecting.
@@ -239,7 +239,7 @@ func TestCollectorSkipsReuploaded(t *testing.T) {
 	}
 	// Meanwhile: uploaded again, but the referring transaction has not
 	// committed yet, so a reference check alone would say "unused".
-	if err := c.Upload(ctx, key, []byte("same")); err != nil {
+	if err := c.Upload(ctx, key, strings.NewReader("same"), 4); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.collect(ctx, key, lease); err != nil {
@@ -263,7 +263,7 @@ func TestBackupRestore(t *testing.T) {
 			owner := uuid.New()
 			keys := []string{Key(KindAvatar, owner, []byte("a"), ExtPNG), Key(KindIcon, owner, []byte("b"), ExtJPEG)}
 			for i, k := range keys {
-				if err := store.Put(ctx, k, []byte{byte('a' + i)}, "x"); err != nil {
+				if err := PutBytes(ctx, store, k, []byte{byte('a' + i)}, "x"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -273,12 +273,12 @@ func TestBackupRestore(t *testing.T) {
 			}
 			// Content-addressed: a second run copies only what is new.
 			third := Key(KindAvatar, owner, []byte("c"), ExtPNG)
-			_ = store.Put(ctx, third, []byte("c"), "x")
+			_ = PutBytes(ctx, store, third, []byte("c"), "x")
 			if c, s, err := Backup(ctx, store, dir); err != nil || c != 1 || s != 2 {
 				t.Fatalf("second backup: %d copied, %d skipped, %v", c, s, err)
 			}
 			// A key outside the pipeline's shape is never written as a path.
-			_ = store.Put(ctx, "../escape.png", []byte("x"), "x")
+			_ = PutBytes(ctx, store, "../escape.png", []byte("x"), "x")
 			if _, _, err := Backup(ctx, store, dir); err == nil {
 				t.Fatal("an unexpected key must be reported")
 			}
@@ -292,8 +292,8 @@ func TestBackupRestore(t *testing.T) {
 				t.Fatalf("restore: %d, %v", n, err)
 			}
 			for _, k := range append(keys, third) {
-				want, _ := store.Get(ctx, k)
-				if got, err := fresh.Get(ctx, k); err != nil || string(got) != string(want) {
+				want, _ := ReadAll(ctx, store, k, 1<<20)
+				if got, err := ReadAll(ctx, fresh, k, 1<<20); err != nil || string(got) != string(want) {
 					t.Fatalf("restored %s = %q, %v", k, got, err)
 				}
 			}

@@ -253,13 +253,35 @@ username; email уникален без учёта регистра.
 
 | Метод и путь | Тело | Ответ | Права |
 |---|---|---|---|
-| `POST /channels/{id}/messages` | `{content, nonce?, reply_to?, reply_mention?}` | 201, сообщение; 200 при повторе с тем же `nonce` | `SEND_MESSAGES` |
+| `POST /channels/{id}/attachments?filename=` | файл (тело), `Content-Length` | 201, вложение без `url` | `SEND_MESSAGES` и `ATTACH_FILES` |
+| `POST /channels/{id}/messages` | `{content, nonce?, reply_to?, reply_mention?, attachments?}` | 201, сообщение; 200 при повторе с тем же `nonce` | `SEND_MESSAGES` |
 | `GET /channels/{id}/messages?before=&after=&limit=` | — | 200, сообщения, новые первыми | `READ_MESSAGE_HISTORY` |
 | `PATCH /channels/{id}/messages/{message_id}` | `{content}` | 200, сообщение | автор и `SEND_MESSAGES` сейчас |
 | `DELETE /channels/{id}/messages/{message_id}` | — | 204 | автор или `MANAGE_MESSAGES` (в личках только автор) |
 
 Сообщение: `{id, channel_id, guild_id?, author: {id, username, display_name, avatar}, content,
-nonce?, reply_to?, mention_everyone, mentions, mention_roles, created_at, edited_at?}`.
+nonce?, reply_to?, mention_everyone, mentions, mention_roles, attachments, created_at, edited_at?}`.
+
+Вложение: `{id, filename, size, content_type, width?, height?, url}` (ADR-0036).
+
+- Файл загружается до сообщения: тело запроса — сам файл, имя — в
+  `?filename=` (путь отбрасывается, управляющие символы удаляются, до 255
+  символов), размер — в `Content-Length` (без него 411). Больше 25 МиБ — 413,
+  пустой — 422.
+- Тип определяет сервер по содержимому. `content_type` image/png, image/jpeg,
+  image/gif, image/webp (с `width` и `height`), video/mp4, video/webm —
+  показываются в ленте; всё остальное (в том числе SVG и HTML) — файл для
+  скачивания, `content_type` здесь только для значка.
+- В сообщение идут до 10 своих загрузок в этот канал, не старше 50 минут и
+  ещё не отправленных; иначе 422 `attachments`. С вложениями `content` может
+  быть пустым; правкой текст можно стереть, если файлы есть.
+- `url` — подписанная ссылка `/cdn/attachments/…?name=&ex=&sig=`, живёт
+  24–36 часов; история и события приходят со свежими. Просроченная или
+  чужая ссылка — 404. Поддерживается `Range` (206), картинки и видео
+  отдаются `inline`, остальное — `attachment` с именем файла.
+- Лимиты: 100 загрузок и 1 ГиБ в час на пользователя.
+- Файлы удаляются с сообщением, каналом, сервером или группой (через сутки),
+  неотправленные — через час.
 
 - `content`: от 1 до 4000 символов после обрезки пробелов. `nonce` — строка
   до 64 байт от клиента; повтор с тем же nonce в том же канале не создаёт

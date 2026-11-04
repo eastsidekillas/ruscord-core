@@ -39,6 +39,8 @@ type Env struct {
 	// it; modules with uploads of their own register with it.
 	Files *blob.Collector
 	Blobs *blob.Memory
+	// CDN signs links to attachments.
+	CDN *blob.Signer
 
 	srv    *httptest.Server
 	signer *auth.Signer
@@ -65,11 +67,12 @@ func New(t *testing.T) *Env {
 	mux := http.NewServeMux()
 	authHTTP := auth.NewHandler(authSvc, false)
 	authHTTP.Register(mux)
-	blob.Register(mux, blobs, testdb.Logger())
+	cdn := blob.NewSigner([]byte("test secret for signing attachment links"))
+	blob.Register(mux, blobs, cdn, testdb.Logger())
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &Env{T: t, PG: pg, Auth: authSvc, Limiter: limiter, Redis: rdb, RequireAuth: authHTTP.RequireAuth,
-		Mux: mux, Eph: &EphRecorder{}, Files: files, Blobs: blobs, srv: srv, signer: signer}
+		Mux: mux, Eph: &EphRecorder{}, Files: files, Blobs: blobs, CDN: cdn, srv: srv, signer: signer}
 }
 
 // Password is the password of every account User creates.

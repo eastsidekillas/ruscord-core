@@ -19,6 +19,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/slicex"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
@@ -58,6 +59,9 @@ type Service struct {
 	dms     DMChannels
 	limiter *ratelimit.Limiter
 	eph     events.EphemeralPublisher
+	// files and signer are set by WithFiles; nil turns attachments off.
+	files  *blob.Collector
+	signer *blob.Signer
 }
 
 func NewService(pg *pgxpool.Pool, users auth.Directory, guilds GuildChannels, dms DMChannels, limiter *ratelimit.Limiter, eph events.EphemeralPublisher) *Service {
@@ -79,8 +83,10 @@ type Message struct {
 	// checked when it was sent or last edited (ADR-0035).
 	Mentions     []uuid.UUID `json:"mentions"`
 	MentionRoles []uuid.UUID `json:"mention_roles"`
-	CreatedAt    time.Time   `json:"created_at"`
-	EditedAt     *time.Time  `json:"edited_at,omitempty"`
+	// Attachments are the files of the message, in upload order (ADR-0036).
+	Attachments []Attachment `json:"attachments"`
+	CreatedAt   time.Time    `json:"created_at"`
+	EditedAt    *time.Time   `json:"edited_at,omitempty"`
 }
 
 // channel is a resolved channel: where it lives, what the caller may do in
@@ -147,22 +153,32 @@ func getMessage(ctx context.Context, q querier, channelID, id uuid.UUID, lock bo
 	return m, err
 }
 
-func (s *Service) withAuthors(ctx context.Context, ms []Message) error {
-	return auth.Attach(ctx, s.users, slicex.Ptrs(ms), func(m *Message) *uuid.UUID { return m.AuthorID },
+// fill completes messages read from q for clients: authors and attachments.
+func (s *Service) fill(ctx context.Context, q querier, ms []Message) error {
+	err := auth.Attach(ctx, s.users, slicex.Ptrs(ms), func(m *Message) *uuid.UUID { return m.AuthorID },
 		func(m *Message, u auth.PublicUser) { m.Author = &u })
+	if err != nil {
+		return err
+	}
+	return s.withAttachments(ctx, q, ms)
 }
 
-func (s *Service) withAuthor(ctx context.Context, m Message) (Message, error) {
+func (s *Service) fillOne(ctx context.Context, q querier, m Message) (Message, error) {
 	ms := []Message{m}
-	err := s.withAuthors(ctx, ms)
+	err := s.fill(ctx, q, ms)
 	return ms[0], err
 }
 
 // validContent trims the text, checks its length and finds its mentions.
-func validContent(content string) (string, parsed, error) {
+// The text may be empty only when the message has files.
+func validContent(content string, files bool) (string, parsed, error) {
 	content = strings.TrimSpace(content)
 	fields := httpx.Fields{}
-	fields.Length("content", content, 1, maxContent)
+	minLen := 1
+	if files {
+		minLen = 0
+	}
+	fields.Length("content", content, minLen, maxContent)
 	if err := fields.Err(); err != nil {
 		return "", parsed{}, err
 	}
@@ -176,6 +192,8 @@ type SendInput struct {
 	ReplyTo *uuid.UUID `json:"reply_to"`
 	// ReplyMention pings the author of the replied message; true when absent.
 	ReplyMention *bool `json:"reply_mention"`
+	// Attachments are ids of the sender's uploads to this channel.
+	Attachments []uuid.UUID `json:"attachments"`
 }
 
 // replyAuthor returns the author of the message a reply answers, to ping
@@ -195,7 +213,10 @@ func replyAuthor(ctx context.Context, q querier, channelID, replyTo, sender uuid
 // Send posts a message. A retry with the same nonce returns the message the
 // first attempt created (created = false) instead of a duplicate.
 func (s *Service) Send(ctx context.Context, userID, channelID uuid.UUID, in SendInput) (Message, bool, error) {
-	content, parsed, err := validContent(in.Content)
+	if err := validAttachmentIDs(in.Attachments); err != nil {
+		return Message{}, false, err
+	}
+	content, parsed, err := validContent(in.Content, len(in.Attachments) > 0)
 	if err != nil {
 		return Message{}, false, err
 	}
@@ -252,7 +273,10 @@ func (s *Service) Send(ctx context.Context, userID, channelID uuid.UUID, in Send
 			Scan(&m.CreatedAt); err != nil {
 			return err
 		}
-		if m, err = s.withAuthor(ctx, m); err != nil {
+		if err := attach(ctx, tx, &m, userID, in.Attachments); err != nil {
+			return err
+		}
+		if m, err = s.fillOne(ctx, tx, m); err != nil {
 			return err
 		}
 		return events.Write(ctx, tx, events.Event{Topic: ch.topic, Type: events.MessageCreate, Data: m})
@@ -279,7 +303,7 @@ func (s *Service) byNonce(ctx context.Context, channelID, userID uuid.UUID, nonc
 	if err != nil {
 		return Message{}, err
 	}
-	return s.withAuthor(ctx, m)
+	return s.fillOne(ctx, s.pg, m)
 }
 
 type Page struct {
@@ -322,12 +346,13 @@ func (s *Service) History(ctx context.Context, userID, channelID uuid.UUID, pg P
 	if err != nil {
 		return nil, err
 	}
-	return ms, s.withAuthors(ctx, ms)
+	return ms, s.fill(ctx, s.pg, ms)
 }
 
 // Edit changes the content of the caller's own message.
 func (s *Service) Edit(ctx context.Context, userID, channelID, id uuid.UUID, content string) (Message, error) {
-	content, parsed, err := validContent(content)
+	// Emptiness is checked once it is known whether the message has files.
+	content, parsed, err := validContent(content, true)
 	if err != nil {
 		return Message{}, err
 	}
@@ -347,6 +372,15 @@ func (s *Service) Edit(ctx context.Context, userID, channelID, id uuid.UUID, con
 		// Editing needs the right to write here now, not only when it was sent.
 		if !ch.perms.Has(perm.SendMessages) {
 			return httpx.ErrForbidden
+		}
+		if content == "" {
+			var files bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM attachments WHERE message_id = $1)`, id).Scan(&files); err != nil {
+				return err
+			}
+			if !files {
+				return httpx.Validation(map[string]string{"content": "От 1 до 4000 символов"})
+			}
 		}
 		var pinged *uuid.UUID
 		if m.ReplyTo != nil && m.ReplyMention {
@@ -369,7 +403,7 @@ func (s *Service) Edit(ctx context.Context, userID, channelID, id uuid.UUID, con
 			id, m.Content, m.MentionEveryone, m.Mentions, m.MentionRoles).Scan(&m.EditedAt); err != nil {
 			return err
 		}
-		if m, err = s.withAuthor(ctx, m); err != nil {
+		if m, err = s.fillOne(ctx, tx, m); err != nil {
 			return err
 		}
 		return events.Write(ctx, tx, events.Event{Topic: ch.topic, Type: events.MessageUpdate, Data: m})
@@ -393,6 +427,9 @@ func (s *Service) Delete(ctx context.Context, userID, channelID, id uuid.UUID) e
 		if !own && !ch.perms.Has(perm.ManageMessages) {
 			return httpx.ErrForbidden
 		}
+		if err := dropAttachments(ctx, tx, `message_id = $1`, id); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM messages WHERE id = $1`, id); err != nil {
 			return err
 		}
@@ -402,7 +439,11 @@ func (s *Service) Delete(ctx context.Context, userID, channelID, id uuid.UUID) e
 }
 
 // DeleteChannels is the hooks.ChannelsDeleted for guild and social.
+// Attachments go first, pending uploads included, with their files scheduled.
 func DeleteChannels(ctx context.Context, tx pgx.Tx, channelIDs []uuid.UUID) error {
+	if err := dropAttachments(ctx, tx, `channel_id = ANY($1)`, channelIDs); err != nil {
+		return err
+	}
 	_, err := tx.Exec(ctx, `DELETE FROM messages WHERE channel_id = ANY($1)`, channelIDs)
 	return err
 }

@@ -116,6 +116,7 @@ func run() error {
 		return nil
 	})
 	var files *blob.Collector
+	var cdn *blob.Signer
 	if cfg.FilesEnabled() {
 		s3 := blob.NewS3(blob.S3Config{Endpoint: cfg.S3Endpoint, Region: cfg.S3Region, Bucket: cfg.S3Bucket,
 			AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey})
@@ -126,9 +127,18 @@ func run() error {
 		}
 		hc.Add("s3", s3.Ping)
 		files = blob.NewCollector(clients.PG, s3, log)
-		blob.Register(mux, s3, log)
+		secret := []byte(cfg.CDNSecret)
+		if len(secret) == 0 {
+			secret = make([]byte, 32)
+			if _, err := rand.Read(secret); err != nil {
+				return err
+			}
+			log.Warn("RUSCORD_CDN_SECRET is not set: using an ephemeral secret, links to attachments break on restart")
+		}
+		cdn = blob.NewSigner(secret)
+		blob.Register(mux, s3, cdn, log)
 	} else {
-		log.Warn("RUSCORD_S3_ACCESS_KEY is not set: avatar and icon uploads are off")
+		log.Warn("RUSCORD_S3_ACCESS_KEY is not set: uploads of avatars, icons and attachments are off")
 	}
 	hc.Register(mux)
 
@@ -182,7 +192,11 @@ func run() error {
 			authHTTP.Register(mux)
 			guild.NewHandler(guilds, authHTTP.RequireAuth).Register(mux)
 			social.NewHandler(socials, authHTTP.RequireAuth).Register(mux)
-			message.NewHandler(message.NewService(clients.PG, svc, guilds, socials, limiter, eph), authHTTP.RequireAuth).Register(mux)
+			messages := message.NewService(clients.PG, svc, guilds, socials, limiter, eph)
+			if files != nil {
+				messages.WithFiles(files, cdn)
+			}
+			message.NewHandler(messages, authHTTP.RequireAuth).Register(mux)
 			voices.Register(mux, authHTTP.RequireAuth)
 
 			relay, err := events.NewRelay(clients.PG, clients.NATS, log)
