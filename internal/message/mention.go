@@ -23,9 +23,10 @@ var (
 	userMention   = regexp.MustCompile(`<@` + uuidPattern + `>`)
 	roleMention   = regexp.MustCompile(`<@&` + uuidPattern + `>`)
 	// codeSpan matches code blocks and inline code, which clients show as
-	// text: a mention inside them pings nobody. The order of the
-	// alternatives follows the client's markup parser.
-	codeSpan = regexp.MustCompile("(?s)```.*?```|``.+?``|`[^`]+`")
+	// text: a mention inside them pings nobody. Blocks may span lines,
+	// inline code may not. ruscord-fe's markup parser follows the same rules
+	// in the same order (src/shared/lib/markup.ts).
+	codeSpan = regexp.MustCompile("(?s:```.*?```)|``[^\n]+?``|`[^`\n]+`")
 )
 
 // parsed is what the text of a message mentions before the ids are checked

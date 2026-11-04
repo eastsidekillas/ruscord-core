@@ -38,7 +38,7 @@ func TestParseMentions(t *testing.T) {
 		{name: "everyone as part of a word", text: "@everyoneX"},
 		{name: "users in order, once", text: user(u2) + " и " + user(u1) + user(u2), users: []uuid.UUID{u2, u1}},
 		{name: "role", text: "внимание " + role(r1), roles: []uuid.UUID{r1}},
-		{name: "role is not a user", text: role(r1)},
+		{name: "role is not a user", text: role(r1), roles: []uuid.UUID{r1}},
 		{name: "upper case id is text", text: "<@" + strings.ToUpper(u1.String()) + ">"},
 		{name: "broken id", text: "<@1234>"},
 		{name: "inline code", text: "`" + user(u1) + " @everyone`"},
@@ -46,6 +46,7 @@ func TestParseMentions(t *testing.T) {
 		{name: "code block", text: "```\n" + user(u1) + "\n@here\n```", users: nil},
 		{name: "after code", text: "`код` " + user(u1), users: []uuid.UUID{u1}},
 		{name: "unclosed backtick", text: "` " + user(u1), users: []uuid.UUID{u1}},
+		{name: "inline code does not span lines", text: "`a\n" + user(u1) + "`", users: []uuid.UUID{u1}},
 		{name: "fifty", text: many(maxMentions), users: nil},
 		{name: "too many", text: many(maxMentions) + role(r1), invalid: true},
 	}
