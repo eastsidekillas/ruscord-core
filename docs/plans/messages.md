@@ -238,4 +238,4 @@ HTML от сервера не приходит никогда. Клиент ра
 | М2 вложения | ядро — ADR-0036; клиент — ruscord-fe `messages-m2-attachments` |
 | М3 реакции и закрепления | ядро — ADR-0037; клиент — ruscord-fe `messages-m3-reactions` |
 | М4 непрочитанное | ядро — ADR-0038 (вместо счётчика в таблице — подсчёт по окну); клиент — ruscord-fe `messages-m4-unread` |
-| М5 поиск | — |
+| М5 поиск | ядро — ADR-0039; клиент — ruscord-fe `messages-m5-search` |
