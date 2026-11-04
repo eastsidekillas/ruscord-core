@@ -45,11 +45,16 @@ type GuildChannels interface {
 	// Mentions keeps the users who are members of the guild and the roles
 	// of the guild the author may ping (any role when pingAll).
 	Mentions(ctx context.Context, guildID uuid.UUID, users, roles []uuid.UUID, pingAll bool) ([]uuid.UUID, []uuid.UUID, error)
+	// Readable lists the text channels the user may read (in one guild or
+	// all) and their roles there.
+	Readable(ctx context.Context, userID uuid.UUID, guildID *uuid.UUID) ([]uuid.UUID, []uuid.UUID, error)
 }
 
 // DMChannels is what message needs from the social module.
 type DMChannels interface {
 	Permissions(ctx context.Context, userID, channelID uuid.UUID) (perm.Permissions, []uuid.UUID, error)
+	// ChannelIDs lists the DMs and groups of the user.
+	ChannelIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 }
 
 type Service struct {
@@ -280,6 +285,10 @@ func (s *Service) Send(ctx context.Context, userID, channelID uuid.UUID, in Send
 		if err := attach(ctx, tx, &m, userID, in.Attachments); err != nil {
 			return err
 		}
+		// One's own message is read.
+		if err := ack(ctx, tx, userID, []uuid.UUID{channelID}, false, `$3::uuid`, m.ID); err != nil {
+			return err
+		}
 		if m, err = s.fillOne(ctx, tx, m); err != nil {
 			return err
 		}
@@ -449,6 +458,9 @@ func (s *Service) Delete(ctx context.Context, userID, channelID, id uuid.UUID) e
 // Attachments go first, pending uploads included, with their files scheduled.
 func DeleteChannels(ctx context.Context, tx pgx.Tx, channelIDs []uuid.UUID) error {
 	if err := dropAttachments(ctx, tx, `channel_id = ANY($1)`, channelIDs); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM read_states WHERE channel_id = ANY($1)`, channelIDs); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `DELETE FROM messages WHERE channel_id = ANY($1)`, channelIDs)

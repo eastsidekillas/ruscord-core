@@ -6,6 +6,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/eastsidekillas/ruscord-core/internal/perm"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 )
 
 // Mentions keeps the ids a message in guildID may ping (ADR-0035): users who
@@ -45,4 +48,28 @@ func (s *Service) keepFound(ctx context.Context, ids []uuid.UUID, sql string, ar
 		}
 	}
 	return out, nil
+}
+
+// Readable lists the text channels whose history userID may read, in every
+// guild of theirs or only in guildID, and the roles they have there, by
+// which role mentions are counted (docs/adr/0038-read-states.md).
+func (s *Service) Readable(ctx context.Context, userID uuid.UUID, guildID *uuid.UUID) ([]uuid.UUID, []uuid.UUID, error) {
+	snaps, err := s.snapshots(ctx, userID, guildID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if guildID != nil && len(snaps) == 0 {
+		return nil, nil, httpx.ErrNotFound // not a member: as if there were no guild
+	}
+	channels, roles := []uuid.UUID{}, []uuid.UUID{}
+	for _, snap := range snaps {
+		v := snap.View()
+		for _, ch := range snap.Channels {
+			if ch.Type == ChannelText && v.Channels[ch.ID].Has(perm.ReadMessageHistory) {
+				channels = append(channels, ch.ID)
+			}
+		}
+		roles = append(roles, snap.Member.RoleIDs...)
+	}
+	return channels, roles, nil
 }

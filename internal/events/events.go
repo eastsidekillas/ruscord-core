@@ -47,6 +47,11 @@ const (
 	ReactionRemoveEmoji = "MESSAGE_REACTION_REMOVE_EMOJI"
 	ReactionRemoveAll   = "MESSAGE_REACTION_REMOVE_ALL"
 
+	// MessageAck goes to the user's topic when their read mark of a channel
+	// moves (message.Ack), so their other sessions clear it too
+	// (docs/adr/0038-read-states.md).
+	MessageAck = "MESSAGE_ACK"
+
 	// UserUpdate goes to the user's own topic when their account changes
 	// (for now, the chosen status). Carries the full private user object.
 	UserUpdate = "USER_UPDATE"
