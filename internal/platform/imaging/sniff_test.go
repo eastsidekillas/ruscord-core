@@ -2,6 +2,7 @@ package imaging
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 
 func TestSniff(t *testing.T) {
 	file := func(name string) []byte {
-		b, err := os.ReadFile("testdata/" + name)
+		b, err := fs.ReadFile(os.DirFS("testdata"), name)
 		if err != nil {
 			t.Fatal(err)
 		}

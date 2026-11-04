@@ -259,8 +259,8 @@ func parseRange(rng string, size int64) (start, end int64, ok bool) {
 		return 0, 0, false
 	}
 	var err error
-	switch {
-	case a == "":
+	switch a {
+	case "":
 		var n int64
 		if n, err = strconv.ParseInt(b, 10, 64); err != nil || n <= 0 {
 			return 0, 0, false
