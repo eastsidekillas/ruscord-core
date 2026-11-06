@@ -292,6 +292,7 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	httpx.AllowRead(w, httpx.BodySize(r, MaxAttachmentBytes))
 	body := http.MaxBytesReader(w, r.Body, MaxAttachmentBytes)
 	a, err := h.svc.Upload(r.Context(), auth.UserID(r), ch, r.URL.Query().Get("filename"), body, r.ContentLength)
 	if err != nil {

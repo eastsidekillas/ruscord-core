@@ -131,6 +131,7 @@ func Handle(fn func(w http.ResponseWriter, r *http.Request) error) http.HandlerF
 // ReadBody reads a raw request body (an uploaded file) of at most limit
 // bytes; a larger one is 413 body_too_large, an empty one 400.
 func ReadBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
+	AllowRead(w, BodySize(r, limit))
 	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	var tooLarge *http.MaxBytesError
 	switch {
