@@ -26,7 +26,7 @@ func TestBodySize(t *testing.T) {
 	for _, tt := range []struct{ length, limit, want int64 }{
 		{-1, 100, 100}, {0, 100, 0}, {50, 100, 50}, {500, 100, 100},
 	} {
-		r := httptest.NewRequest("POST", "/", nil)
+		r := httptest.NewRequestWithContext(t.Context(), "POST", "/", nil)
 		r.ContentLength = tt.length
 		if got := BodySize(r, tt.limit); got != tt.want {
 			t.Errorf("BodySize(%d, %d) = %d, want %d", tt.length, tt.limit, got, tt.want)
