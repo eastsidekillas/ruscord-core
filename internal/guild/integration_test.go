@@ -303,6 +303,8 @@ func TestValidationAndNoEventsOnFailure(t *testing.T) {
 	owner.Expect(http.StatusUnprocessableEntity, "POST", g+"/channels", map[string]any{"type": 1, "name": "dm"})
 	owner.Expect(http.StatusUnprocessableEntity, "POST", g+"/channels", map[string]any{"type": 0, "name": "t", "bitrate": 96000})
 	owner.Expect(http.StatusUnprocessableEntity, "POST", g+"/channels", map[string]any{"type": 2, "name": "v", "user_limit": 100})
+	// Slow mode is for text channels only (ADR-0043).
+	owner.Expect(http.StatusUnprocessableEntity, "POST", g+"/channels", map[string]any{"type": 2, "name": "v", "rate_limit_per_user": 10})
 	owner.Expect(http.StatusUnprocessableEntity, "POST", g+"/channels", map[string]any{"type": 0, "name": "t", "parent_id": text})
 	owner.Expect(http.StatusUnprocessableEntity, "POST", g+"/channels", map[string]any{"type": 0, "name": "t", "topic": "a\x00b"})
 	owner.Expect(http.StatusUnprocessableEntity, "PATCH", "/api/v1/channels/"+text, map[string]any{"topic": "a\x00b"})
@@ -315,6 +317,10 @@ func TestValidationAndNoEventsOnFailure(t *testing.T) {
 
 	if after := len(e.OutboxTypes()); after != before {
 		t.Fatalf("failed requests wrote %d events", after-before)
+	}
+	slow := obj(owner.Expect(http.StatusCreated, "POST", g+"/channels", map[string]any{"name": "медленный", "rate_limit_per_user": 60}))
+	if slow["rate_limit_per_user"] != float64(60) {
+		t.Fatalf("slow channel: %v", slow)
 	}
 
 	v := obj(owner.Expect(http.StatusCreated, "POST", g+"/channels", map[string]any{"type": 2, "name": "Игры", "user_limit": 5}))

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/apitest"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/newcomer"
 )
 
 type env struct {
@@ -366,4 +368,33 @@ func TestRelationshipAddCarriesUser(t *testing.T) {
 	if list["since"] != got[4].Data["since"] {
 		t.Errorf("since in the list %v, in the event %v", list["since"], got[4].Data["since"])
 	}
+}
+
+// New accounts wait before friend requests and DMs to strangers (ADR-0044);
+// answering a request and writing to friends do not wait.
+func TestNewcomersWait(t *testing.T) {
+	e := newEnv(t)
+	e.svc.SetNewcomers(newcomer.Policy{Wait: time.Hour})
+	ann, bob, cat := e.User("ann"), e.User("bob"), e.User("cat")
+	g, err := e.guilds.Create(t.Context(), ann.ID, guild.CreateGuildInput{Name: "общий"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.guilds.AddMember(t.Context(), g.ID, cat.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	r := obj(bob.Expect(http.StatusForbidden, "PUT", rels+"/"+ann.ID.String(), map[string]any{}))
+	if r["code"] != "account_too_new" || r["retry_after"] == nil {
+		t.Fatalf("request: %v", r)
+	}
+	// Cat shares a server with Ann but is a stranger to her.
+	cat.Expect(http.StatusForbidden, "POST", dms, map[string]any{"recipient_id": ann.ID})
+
+	// With the policy off for the test, Ann's request arrives; Bob may answer it.
+	e.svc.SetNewcomers(newcomer.Policy{})
+	ann.Expect(http.StatusNoContent, "PUT", rels+"/"+bob.ID.String(), map[string]any{})
+	e.svc.SetNewcomers(newcomer.Policy{Wait: time.Hour})
+	bob.Expect(http.StatusNoContent, "PUT", rels+"/"+ann.ID.String(), map[string]any{})
+	bob.Expect(http.StatusOK, "POST", dms, map[string]any{"recipient_id": ann.ID})
 }

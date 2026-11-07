@@ -56,16 +56,19 @@ type Overwrite struct {
 }
 
 type Channel struct {
-	ID         uuid.UUID   `json:"id"`
-	GuildID    uuid.UUID   `json:"guild_id"`
-	Type       ChannelType `json:"type"`
-	Name       string      `json:"name"`
-	Topic      string      `json:"topic,omitempty"`
-	ParentID   *uuid.UUID  `json:"parent_id,omitempty"`
-	Position   int         `json:"position"`
-	UserLimit  int         `json:"user_limit,omitempty"`
-	Bitrate    int         `json:"bitrate,omitempty"`
-	Overwrites []Overwrite `json:"permission_overwrites"`
+	ID        uuid.UUID   `json:"id"`
+	GuildID   uuid.UUID   `json:"guild_id"`
+	Type      ChannelType `json:"type"`
+	Name      string      `json:"name"`
+	Topic     string      `json:"topic,omitempty"`
+	ParentID  *uuid.UUID  `json:"parent_id,omitempty"`
+	Position  int         `json:"position"`
+	UserLimit int         `json:"user_limit,omitempty"`
+	Bitrate   int         `json:"bitrate,omitempty"`
+	// RateLimitPerUser is slow mode: seconds between one member's messages
+	// in a text channel (ADR-0043); 0 is off.
+	RateLimitPerUser int         `json:"rate_limit_per_user"`
+	Overwrites       []Overwrite `json:"permission_overwrites"`
 }
 
 type Member struct {

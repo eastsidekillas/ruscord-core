@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func env(m map[string]string) func(string) string {
@@ -159,5 +160,20 @@ func TestLoadAdminUserIDs(t *testing.T) {
 	}
 	if c, _ := load(env(nil)); len(c.AdminUserIDs) != 0 {
 		t.Fatalf("default: %v", c.AdminUserIDs)
+	}
+}
+
+func TestLoadNewcomerWait(t *testing.T) {
+	for _, tt := range []struct {
+		in   string
+		want time.Duration
+		bad  bool
+	}{
+		{in: "", want: 0}, {in: "5", want: 5 * time.Minute}, {in: "-1", bad: true}, {in: "soon", bad: true}, {in: "10081", bad: true},
+	} {
+		c, err := load(env(map[string]string{"RUSCORD_NEWCOMER_WAIT_MIN": tt.in}))
+		if tt.bad != (err != nil) || (!tt.bad && c.NewcomerWait != tt.want) {
+			t.Errorf("%q: %v, %v", tt.in, c.NewcomerWait, err)
+		}
 	}
 }

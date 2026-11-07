@@ -154,6 +154,10 @@ func (s *Service) OpenDM(ctx context.Context, me, other uuid.UUID) (DM, error) {
 		return DM{}, err
 	}
 	if !ok {
+		// A stranger from a shared server: new accounts wait first.
+		if err := s.newcomers.Check(me, "писать незнакомым"); err != nil {
+			return DM{}, err
+		}
 		if ok, err = s.guilds.SharesGuild(ctx, me, other); err != nil {
 			return DM{}, err
 		}

@@ -34,6 +34,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/logx"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/metrics"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/newcomer"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/store"
 	"github.com/eastsidekillas/ruscord-core/internal/presence"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
@@ -211,6 +212,9 @@ func run() error {
 			guild.NewHandler(guilds, authHTTP.RequireAuth).Register(mux)
 			social.NewHandler(socials, authHTTP.RequireAuth).Register(mux)
 			messages := message.NewService(clients.PG, svc, guilds, socials, limiter, eph)
+			newcomers := newcomer.Policy{Wait: cfg.NewcomerWait}
+			messages.SetNewcomers(newcomers)
+			socials.SetNewcomers(newcomers)
 			reports := stats.NewService(clients.PG, limiter, cfg.AdminUserIDs, svc, guilds, socials, messages, pres)
 			stats.NewHandler(reports, authHTTP.RequireAuth, auth.UserID).Register(mux)
 			if files != nil {
