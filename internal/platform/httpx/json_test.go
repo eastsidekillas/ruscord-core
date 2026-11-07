@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDecodeJSON(t *testing.T) {
@@ -83,5 +84,25 @@ func TestReadBody(t *testing.T) {
 	}
 	if st, code := read("", 3); st != http.StatusBadRequest || code != "invalid_request" {
 		t.Fatalf("empty: %d %s", st, code)
+	}
+}
+
+func TestRetryAfterHeader(t *testing.T) {
+	for _, tt := range []struct {
+		after  time.Duration
+		header string
+	}{
+		{0, "1"}, {300 * time.Millisecond, "1"}, {time.Second, "1"}, {1500 * time.Millisecond, "2"}, {5 * time.Minute, "300"},
+	} {
+		w := httptest.NewRecorder()
+		WriteError(w, httptest.NewRequestWithContext(t.Context(), "GET", "/", nil), Retry(http.StatusTooManyRequests, "slow_mode", "подождите", tt.after))
+		if got := w.Header().Get("Retry-After"); got != tt.header || !strings.Contains(w.Body.String(), `"retry_after":`+tt.header) {
+			t.Errorf("%v: header %q, body %s", tt.after, got, w.Body.String())
+		}
+	}
+	w := httptest.NewRecorder()
+	WriteError(w, httptest.NewRequestWithContext(t.Context(), "GET", "/", nil), ErrForbidden)
+	if w.Header().Get("Retry-After") != "" || strings.Contains(w.Body.String(), "retry_after") {
+		t.Errorf("no wait: %v %s", w.Header(), w.Body.String())
 	}
 }

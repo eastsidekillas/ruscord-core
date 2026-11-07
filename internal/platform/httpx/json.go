@@ -7,7 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -21,6 +23,17 @@ type Error struct {
 	Code    string            `json:"code"`
 	Message string            `json:"message"`
 	Fields  map[string]string `json:"fields,omitempty"`
+	// RetryAfter is how many seconds to wait before trying again (429, or a
+	// 403 that passes with time); it also goes out as Retry-After.
+	RetryAfter int `json:"retry_after,omitempty"`
+}
+
+// Retry is NewError for an answer that passes after a wait, rounded up to
+// whole seconds.
+func Retry(status int, code, msg string, after time.Duration) *Error {
+	e := NewError(status, code, msg)
+	e.RetryAfter = max(int((after+time.Second-1)/time.Second), 1)
+	return e
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
@@ -92,6 +105,9 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	var apiErr *Error
 	if errors.As(err, &apiErr) {
+		if apiErr.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(apiErr.RetryAfter))
+		}
 		WriteJSON(w, apiErr.Status, apiErr)
 		return
 	}

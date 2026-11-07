@@ -17,6 +17,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/events"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/hooks"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/newcomer"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/slicex"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
@@ -61,9 +62,15 @@ type Service struct {
 	users   Users
 	guilds  Guilds
 	limiter *ratelimit.Limiter
+	// newcomers holds back new accounts (SetNewcomers).
+	newcomers newcomer.Policy
 
 	channelsDeleted hooks.ChannelsDeleted
 }
+
+// SetNewcomers holds back new accounts from friend requests and DMs to
+// strangers (ADR-0044); by default nobody waits.
+func (s *Service) SetNewcomers(p newcomer.Policy) { s.newcomers = p }
 
 // LockChannels holds DMs and groups against deletion until tx ends and
 // returns those that exist (hooks.LockChannels). A group is deleted under
@@ -222,6 +229,9 @@ func (s *Service) Request(ctx context.Context, me, other uuid.UUID) error {
 				return err
 			}
 			return events.Write(ctx, tx, evs...)
+		}
+		if err := s.newcomers.Check(me, "отправлять заявки в друзья"); err != nil {
+			return err
 		}
 		if err := s.limiter.Check(ctx, ruleFriendRequest, me.String()); err != nil {
 			return err

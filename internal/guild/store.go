@@ -132,7 +132,7 @@ func listChannels(ctx context.Context, q querier, guildID uuid.UUID) ([]Channel,
 // ordered by position.
 func channelsIn(ctx context.Context, q querier, guildIDs []uuid.UUID) (map[uuid.UUID][]Channel, error) {
 	rows, err := q.Query(ctx,
-		`SELECT id, guild_id, type, COALESCE(name, ''), COALESCE(topic, ''), parent_id, position, user_limit, bitrate
+		`SELECT id, guild_id, type, COALESCE(name, ''), COALESCE(topic, ''), parent_id, position, user_limit, bitrate, rate_limit_per_user
 		 FROM channels WHERE guild_id = ANY($1) ORDER BY guild_id, position, id`, guildIDs)
 	if err != nil {
 		return nil, err
@@ -155,7 +155,7 @@ func channelsIn(ctx context.Context, q querier, guildIDs []uuid.UUID) (map[uuid.
 
 func getChannel(ctx context.Context, q querier, id uuid.UUID) (Channel, error) {
 	rows, err := q.Query(ctx,
-		`SELECT id, guild_id, type, COALESCE(name, ''), COALESCE(topic, ''), parent_id, position, user_limit, bitrate
+		`SELECT id, guild_id, type, COALESCE(name, ''), COALESCE(topic, ''), parent_id, position, user_limit, bitrate, rate_limit_per_user
 		 FROM channels WHERE id = $1`, id)
 	if err != nil {
 		return Channel{}, err
@@ -177,7 +177,7 @@ func getChannel(ctx context.Context, q querier, id uuid.UUID) (Channel, error) {
 
 func scanChannel(r pgx.CollectableRow) (Channel, error) {
 	var c Channel
-	err := r.Scan(&c.ID, &c.GuildID, &c.Type, &c.Name, &c.Topic, &c.ParentID, &c.Position, &c.UserLimit, &c.Bitrate)
+	err := r.Scan(&c.ID, &c.GuildID, &c.Type, &c.Name, &c.Topic, &c.ParentID, &c.Position, &c.UserLimit, &c.Bitrate, &c.RateLimitPerUser)
 	if c.Type != ChannelVoice {
 		c.UserLimit, c.Bitrate = 0, 0
 	}
