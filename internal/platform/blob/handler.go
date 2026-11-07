@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
 )
 
 // Register serves stored files at GET /cdn/<key>. Avatars and icons are
@@ -70,6 +72,7 @@ func Register(mux *http.ServeMux, store Store, signer *Signer, log *slog.Logger)
 			h.Set("Content-Range", obj.Range)
 			status = http.StatusPartialContent
 		}
+		httpx.AllowWrite(w, obj.Size)
 		w.WriteHeader(status)
 		_, _ = io.Copy(w, obj.Body) //nolint:gosec // G705: served inert (fixed type, nosniff, sandbox CSP)
 	})
