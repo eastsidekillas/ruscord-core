@@ -288,6 +288,19 @@ type CallMember struct {
 }
 
 // CallMembers lists everyone recorded in a call now.
+// CallsOf are the calls the user is in, with the participant of each.
+func (s *Service) CallsOf(ctx context.Context, userID uuid.UUID) ([]CallMember, error) {
+	rows, err := s.pg.Query(ctx, `SELECT call_id, user_id, participant FROM dm_call_members WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (CallMember, error) {
+		var m CallMember
+		err := r.Scan(&m.CallID, &m.UserID, &m.Participant)
+		return m, err
+	})
+}
+
 func (s *Service) CallMembers(ctx context.Context) ([]CallMember, error) {
 	rows, err := s.pg.Query(ctx, `SELECT m.call_id, m.user_id, m.participant, c.channel_id
 		FROM dm_call_members m JOIN dm_calls c ON c.id = m.call_id`)

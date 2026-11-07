@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"slices"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
@@ -24,7 +26,12 @@ const (
 	maxSearchQuery  = 200
 )
 
+// searchTimeout bounds one search in the database.
+const searchTimeout = 3 * time.Second
+
 var (
+	errSearchTooSlow = httpx.NewError(http.StatusUnprocessableEntity, "search_too_slow",
+		"Поиск занял слишком много времени: добавьте слова или выберите канал")
 	ruleSearch       = ratelimit.Rule{Name: "search", Limit: 1, Window: time.Second}
 	ruleSearchMinute = ratelimit.Rule{Name: "search_minute", Limit: 30, Window: time.Minute}
 	errEmptySearch   = httpx.Validation(map[string]string{"q": "Нужен текст или хотя бы один фильтр"})
@@ -148,7 +155,8 @@ func (s *Service) search(ctx context.Context, userID uuid.UUID, channels []uuid.
 		where = append(where, `m.author_id = `+arg(*q.AuthorID))
 	}
 	if q.Mentions != nil {
-		where = append(where, arg(*q.Mentions)+` = ANY (m.mentions)`)
+		// @> uses the GIN index on mentions; = ANY does not.
+		where = append(where, `m.mentions @> ARRAY[`+arg(*q.Mentions)+`]::uuid[]`)
 	}
 	for _, h := range q.Has {
 		where = append(where, hasFilters[h])
@@ -161,23 +169,36 @@ func (s *Service) search(ctx context.Context, userID uuid.UUID, channels []uuid.
 	}
 	cond := strings.Join(where, " AND ")
 
-	if err := s.pg.QueryRow(ctx,
-		`SELECT count(*) FROM (SELECT 1 FROM messages m WHERE `+cond+` LIMIT `+strconv.Itoa(maxSearchOffset+searchPage)+`) x`,
-		args...).Scan(&out.Total); err != nil {
-		return out, err
+	offset := arg(q.Offset)
+	var ms []Message
+	// A search without text can walk every message of a server: it gets a
+	// few seconds, not the database (S5 of docs/audit/2026-11-04.md).
+	err := pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = `+strconv.Itoa(int(searchTimeout/time.Millisecond))); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM (SELECT 1 FROM messages m WHERE `+cond+` LIMIT `+strconv.Itoa(maxSearchOffset+searchPage)+`) x`,
+			args[:len(args)-1]...).Scan(&out.Total); err != nil {
+			return err
+		}
+		if out.Total == 0 || q.Offset >= out.Total {
+			return nil
+		}
+		// The select list is unqualified: only m is in scope there.
+		rows, err := tx.Query(ctx,
+			`SELECT `+msgCols+` FROM messages m WHERE `+cond+` ORDER BY m.id DESC LIMIT `+strconv.Itoa(searchPage)+` OFFSET `+offset,
+			args...)
+		if err != nil {
+			return err
+		}
+		ms, err = pgx.CollectRows(rows, scanMessage)
+		return err
+	})
+	if isTimeout(err) {
+		return out, errSearchTooSlow
 	}
-	if out.Total == 0 || q.Offset >= out.Total {
-		return out, nil
-	}
-	// The select list is unqualified: only m is in scope there.
-	rows, err := s.pg.Query(ctx,
-		`SELECT `+msgCols+` FROM messages m WHERE `+cond+` ORDER BY m.id DESC LIMIT `+strconv.Itoa(searchPage)+` OFFSET `+arg(q.Offset),
-		args...)
-	if err != nil {
-		return out, err
-	}
-	ms, err := pgx.CollectRows(rows, scanMessage)
-	if err != nil {
+	if err != nil || len(ms) == 0 {
 		return out, err
 	}
 	if err := s.fill(ctx, s.pg, ms); err != nil {
@@ -188,6 +209,12 @@ func (s *Service) search(ctx context.Context, userID uuid.UUID, channels []uuid.
 	}
 	out.Messages = ms
 	return out, nil
+}
+
+// isTimeout reports a statement cancelled by statement_timeout.
+func isTimeout(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "57014"
 }
 
 // parseSearch reads a search from the query string.

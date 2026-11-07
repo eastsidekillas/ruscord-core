@@ -1,11 +1,14 @@
 package message
 
 import (
+	"errors"
 	"image/color"
 	"net/http"
 	"net/url"
 	"slices"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/apitest"
@@ -117,4 +120,22 @@ func TestHistoryAround(t *testing.T) {
 		t.Fatalf("around 3: %v", got)
 	}
 	owner.Expect(http.StatusBadRequest, "GET", msgs(text)+"?around="+ids[2]+"&before="+ids[3], nil)
+}
+
+// A statement stopped by statement_timeout is told apart from other errors.
+func TestIsTimeout(t *testing.T) {
+	e := newEnv(t)
+	err := pgx.BeginFunc(t.Context(), e.PG, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(t.Context(), `SET LOCAL statement_timeout = 10`); err != nil {
+			return err
+		}
+		_, err := tx.Exec(t.Context(), `SELECT pg_sleep(1)`)
+		return err
+	})
+	if !isTimeout(err) {
+		t.Fatalf("a timeout: %v", err)
+	}
+	if isTimeout(errors.New("other")) || isTimeout(nil) || isTimeout(errSearchTooSlow) {
+		t.Fatal("not a timeout")
+	}
 }
