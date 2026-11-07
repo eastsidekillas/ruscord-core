@@ -324,9 +324,14 @@ type CreateChannelInput struct {
 	ParentID  *uuid.UUID  `json:"parent_id"`
 	UserLimit int         `json:"user_limit"`
 	Bitrate   int         `json:"bitrate"`
+	// RateLimitPerUser is slow mode in seconds, text channels only.
+	RateLimitPerUser int `json:"rate_limit_per_user"`
 }
 
-func validateChannel(fields httpx.Fields, typ ChannelType, name, topic string, userLimit, bitrate int) {
+// MaxSlowMode is the longest slow mode: 6 hours, as in Discord.
+const MaxSlowMode = 6 * 60 * 60
+
+func validateChannel(fields httpx.Fields, typ ChannelType, name, topic string, userLimit, bitrate, slow int) {
 	fields.Length("name", name, 1, 100)
 	fields.Length("topic", topic, 0, 1024)
 	if userLimit < 0 || userLimit > 99 {
@@ -338,6 +343,11 @@ func validateChannel(fields httpx.Fields, typ ChannelType, name, topic string, u
 	if typ != ChannelVoice && (userLimit != 0 || bitrate != 0) {
 		fields["type"] = "user_limit и bitrate есть только у голосовых каналов"
 	}
+	if slow < 0 || slow > MaxSlowMode {
+		fields["rate_limit_per_user"] = "От 0 до 21600 секунд"
+	} else if slow != 0 && typ != ChannelText {
+		fields["rate_limit_per_user"] = "Медленный режим есть только у текстовых каналов"
+	}
 }
 
 func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, in CreateChannelInput) (Channel, error) {
@@ -346,7 +356,7 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 	if !in.Type.inGuild() {
 		fields["type"] = "Допустимы 0 (текст), 2 (голос), 4 (категория)"
 	}
-	validateChannel(fields, in.Type, in.Name, in.Topic, in.UserLimit, in.Bitrate)
+	validateChannel(fields, in.Type, in.Name, in.Topic, in.UserLimit, in.Bitrate, in.RateLimitPerUser)
 	if in.Type == ChannelCategory && in.ParentID != nil {
 		fields["parent_id"] = "Категория не может быть вложенной"
 	}
@@ -383,9 +393,9 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 			return err
 		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO channels (id, guild_id, type, name, topic, parent_id, position, user_limit, bitrate)
-			 VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, $9)`,
-			id, guildID, in.Type, in.Name, in.Topic, in.ParentID, maxPos+1, in.UserLimit, in.Bitrate); err != nil {
+			`INSERT INTO channels (id, guild_id, type, name, topic, parent_id, position, user_limit, bitrate, rate_limit_per_user)
+			 VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10)`,
+			id, guildID, in.Type, in.Name, in.Topic, in.ParentID, maxPos+1, in.UserLimit, in.Bitrate, in.RateLimitPerUser); err != nil {
 			return err
 		}
 		ch, err = getChannel(ctx, tx, id)
@@ -433,6 +443,8 @@ type UpdateChannelInput struct {
 	Position  *int                      `json:"position"`
 	UserLimit *int                      `json:"user_limit"`
 	Bitrate   *int                      `json:"bitrate"`
+	// RateLimitPerUser sets slow mode, text channels only.
+	RateLimitPerUser *int `json:"rate_limit_per_user"`
 }
 
 func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID, in UpdateChannelInput) (Channel, error) {
@@ -460,8 +472,11 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID
 		if in.Bitrate != nil {
 			bitrate = *in.Bitrate
 		}
+		if in.RateLimitPerUser != nil {
+			ch.RateLimitPerUser = *in.RateLimitPerUser
+		}
 		fields := httpx.Fields{}
-		validateChannel(fields, ch.Type, ch.Name, ch.Topic, limit, bitrate)
+		validateChannel(fields, ch.Type, ch.Name, ch.Topic, limit, bitrate, ch.RateLimitPerUser)
 		if ch.Position < 0 {
 			fields["position"] = "Не меньше 0"
 		}
@@ -484,9 +499,9 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID
 		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE channels SET name = $2, topic = NULLIF($3, ''), parent_id = $4, position = $5,
-			        user_limit = $6, bitrate = COALESCE(NULLIF($7, 0), bitrate)
+			        user_limit = $6, bitrate = COALESCE(NULLIF($7, 0), bitrate), rate_limit_per_user = $8
 			 WHERE id = $1`,
-			ch.ID, ch.Name, ch.Topic, ch.ParentID, ch.Position, ch.UserLimit, ch.Bitrate); err != nil {
+			ch.ID, ch.Name, ch.Topic, ch.ParentID, ch.Position, ch.UserLimit, ch.Bitrate, ch.RateLimitPerUser); err != nil {
 			return err
 		}
 		var err error
@@ -551,23 +566,33 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 	return err
 }
 
-// ChannelPermissions returns the guild of a channel and the user's
-// permissions in it, for modules that act inside channels (messages). A
-// channel the user cannot view is reported as not found.
-func (s *Service) ChannelPermissions(ctx context.Context, userID, channelID uuid.UUID) (uuid.UUID, ChannelType, perm.Permissions, error) {
+// ChannelAccess is what a module acting inside a guild channel (messages)
+// needs to know of it.
+type ChannelAccess struct {
+	GuildID uuid.UUID
+	Type    ChannelType
+	// Perms are the user's permissions in the channel.
+	Perms perm.Permissions
+	// SlowMode is the wait between one member's messages (ADR-0043).
+	SlowMode time.Duration
+}
+
+// ChannelAccess returns a guild channel as the user sees it. A channel the
+// user cannot view is reported as not found.
+func (s *Service) ChannelAccess(ctx context.Context, userID, channelID uuid.UUID) (ChannelAccess, error) {
 	ch, err := getChannel(ctx, s.pg, channelID)
 	if err != nil {
-		return uuid.Nil, 0, 0, notFound(err)
+		return ChannelAccess{}, notFound(err)
 	}
 	a, err := loadAccess(ctx, s.pg, ch.GuildID, userID)
 	if err != nil {
-		return uuid.Nil, 0, 0, notFound(err)
+		return ChannelAccess{}, notFound(err)
 	}
 	p := a.in(ch)
 	if !p.Has(perm.ViewChannel) {
-		return uuid.Nil, 0, 0, httpx.ErrNotFound
+		return ChannelAccess{}, httpx.ErrNotFound
 	}
-	return ch.GuildID, ch.Type, p, nil
+	return ChannelAccess{GuildID: ch.GuildID, Type: ch.Type, Perms: p, SlowMode: time.Duration(ch.RateLimitPerUser) * time.Second}, nil
 }
 
 // ListChannels returns the guild's channels that userID can view.

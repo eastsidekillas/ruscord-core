@@ -62,9 +62,9 @@ func (l *Limiter) CheckN(ctx context.Context, rule Rule, key string, n int64) er
 		return err
 	}
 	if !ok {
-		secs := int(retry.Round(time.Second) / time.Second)
-		return httpx.NewError(http.StatusTooManyRequests, "rate_limited",
-			fmt.Sprintf("Слишком много попыток, повторите через %d с", max(secs, 1)))
+		e := httpx.Retry(http.StatusTooManyRequests, "rate_limited", "", retry)
+		e.Message = fmt.Sprintf("Слишком много попыток, повторите через %d с", e.RetryAfter)
+		return e
 	}
 	return nil
 }

@@ -73,6 +73,9 @@ type Config struct {
 	TrustedProxies []netip.Prefix
 	// AdminUserIDs may see owner statistics (ADR-0042); empty means nobody.
 	AdminUserIDs []uuid.UUID
+	// NewcomerWait holds back new accounts from guild channels, friend
+	// requests and DMs to strangers (ADR-0044); 0 turns it off.
+	NewcomerWait time.Duration
 }
 
 func (c Config) IsDev() bool { return c.Env == "dev" }
@@ -151,6 +154,12 @@ func load(getenv func(string) string) (Config, error) {
 		}
 		c.TrustedProxies = append(c.TrustedProxies, prefix.Masked())
 	}
+	wait, err := strconv.Atoi(get("RUSCORD_NEWCOMER_WAIT_MIN", "0"))
+	if err != nil || wait < 0 || wait > 7*24*60 {
+		errs = append(errs, errors.New("RUSCORD_NEWCOMER_WAIT_MIN: minutes, from 0 to 10080"))
+	}
+	c.NewcomerWait = time.Duration(wait) * time.Minute
+
 	for _, s := range strings.Split(get("RUSCORD_ADMIN_USER_IDS", ""), ",") {
 		if s = strings.TrimSpace(s); s == "" {
 			continue

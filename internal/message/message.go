@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/eastsidekillas/ruscord-core/internal/perm"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/blob"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/httpx"
+	"github.com/eastsidekillas/ruscord-core/internal/platform/newcomer"
 	"github.com/eastsidekillas/ruscord-core/internal/platform/slicex"
 	"github.com/eastsidekillas/ruscord-core/internal/ratelimit"
 )
@@ -41,7 +43,7 @@ var (
 
 // GuildChannels is what message needs from the guild module.
 type GuildChannels interface {
-	ChannelPermissions(ctx context.Context, userID, channelID uuid.UUID) (uuid.UUID, guild.ChannelType, perm.Permissions, error)
+	ChannelAccess(ctx context.Context, userID, channelID uuid.UUID) (guild.ChannelAccess, error)
 	// Mentions keeps the users who are members of the guild and the roles
 	// of the guild the author may ping (any role when pingAll).
 	Mentions(ctx context.Context, guildID uuid.UUID, users, roles []uuid.UUID, pingAll bool) ([]uuid.UUID, []uuid.UUID, error)
@@ -75,10 +77,38 @@ type Service struct {
 	// files and signer are set by WithFiles; nil turns attachments off.
 	files  *blob.Collector
 	signer *blob.Signer
+	// newcomers holds back new accounts (SetNewcomers).
+	newcomers newcomer.Policy
 }
 
 func NewService(pg *pgxpool.Pool, users auth.Directory, guilds GuildChannels, dms DMChannels, limiter *ratelimit.Limiter, eph events.EphemeralPublisher) *Service {
 	return &Service{pg: pg, users: users, guilds: guilds, dms: dms, limiter: limiter, eph: eph}
+}
+
+// SetNewcomers holds back new accounts from writing in guild channels
+// (ADR-0044); by default nobody waits.
+func (s *Service) SetNewcomers(p newcomer.Policy) { s.newcomers = p }
+
+// moderates reports whether slow mode and the newcomer wait pass the user
+// by: those who manage messages or the channel keep order, they do not wait.
+func moderates(p perm.Permissions) bool {
+	return p.Has(perm.ManageMessages) || p.Has(perm.ManageChannels)
+}
+
+// slowMode lets a member send in a slow channel once per its wait
+// (ADR-0043); DMs have none.
+func (s *Service) slowMode(ctx context.Context, userID uuid.UUID, ch channel) error {
+	if ch.slowMode <= 0 || moderates(ch.perms) {
+		return nil
+	}
+	rule := ratelimit.Rule{Name: "slow_mode", Limit: 1, Window: ch.slowMode}
+	ok, retry, err := s.limiter.Allow(ctx, rule, ch.id.String()+":"+userID.String())
+	if err != nil || ok {
+		return err
+	}
+	e := httpx.Retry(http.StatusTooManyRequests, "slow_mode", "", retry)
+	e.Message = "Медленный режим: следующее сообщение через " + strconv.Itoa(e.RetryAfter) + " с"
+	return e
 }
 
 type Message struct {
@@ -117,17 +147,21 @@ type channel struct {
 	ephTopic string
 	// recipients are the members of a DM; empty for guild channels.
 	recipients []uuid.UUID
+	// slowMode is the wait between one member's messages; guild channels only.
+	slowMode time.Duration
 }
 
 // resolve finds the channel in the guild module, then in the social module.
 // Channel ids are UUIDv7 in both, so they never collide.
 func (s *Service) resolve(ctx context.Context, userID, channelID uuid.UUID) (channel, error) {
-	gid, typ, p, err := s.guilds.ChannelPermissions(ctx, userID, channelID)
+	a, err := s.guilds.ChannelAccess(ctx, userID, channelID)
 	if err == nil {
-		if typ != guild.ChannelText {
+		if a.Type != guild.ChannelText {
 			return channel{}, errNotText
 		}
-		return channel{id: channelID, guildID: &gid, perms: p, topic: events.GuildTopic(gid), ephTopic: events.EphGuildTopic(gid)}, nil
+		gid := a.GuildID
+		return channel{id: channelID, guildID: &gid, perms: a.Perms, topic: events.GuildTopic(gid), ephTopic: events.EphGuildTopic(gid),
+			slowMode: a.SlowMode}, nil
 	}
 	if !errors.Is(err, httpx.ErrNotFound) {
 		return channel{}, err
@@ -291,6 +325,11 @@ func (s *Service) Send(ctx context.Context, userID, channelID uuid.UUID, in Send
 	if !ch.perms.Has(perm.SendMessages) {
 		return Message{}, false, httpx.ErrForbidden
 	}
+	if ch.guildID != nil && !moderates(ch.perms) {
+		if err := s.newcomers.Check(userID, "писать на серверах"); err != nil {
+			return Message{}, false, err
+		}
+	}
 	if in.Nonce != nil {
 		if m, err := s.byNonce(ctx, channelID, userID, *in.Nonce); err == nil {
 			return m, false, nil
@@ -326,6 +365,10 @@ func (s *Service) Send(ctx context.Context, userID, channelID uuid.UUID, in Send
 	mn.apply(&m)
 	sender, err := s.author(ctx, &userID)
 	if err != nil {
+		return Message{}, false, err
+	}
+	// Last before writing: a send that fails above does not cost the wait.
+	if err := s.slowMode(ctx, userID, ch); err != nil {
 		return Message{}, false, err
 	}
 	err = pgx.BeginFunc(ctx, s.pg, func(tx pgx.Tx) error {
