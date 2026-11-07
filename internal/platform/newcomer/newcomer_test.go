@@ -1,6 +1,7 @@
 package newcomer
 
 import (
+	"encoding/binary"
 	"errors"
 	"net/http"
 	"testing"
@@ -14,10 +15,9 @@ import (
 // idAt is a UUIDv7 made at t.
 func idAt(t time.Time) uuid.UUID {
 	u := uuid.Must(uuid.NewV7())
-	ms := uint64(t.UnixMilli()) //nolint:gosec // test times are after 1970
-	for i := range 6 {
-		u[i] = byte(ms >> (40 - 8*i))
-	}
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], uint64(t.UnixMilli())<<16) //nolint:gosec // test times are after 1970
+	copy(u[:6], b[:6])
 	return u
 }
 
