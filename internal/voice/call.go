@@ -34,6 +34,7 @@ type Calls interface {
 	CallJoined(ctx context.Context, userID, callID uuid.UUID, participant string) (bool, error)
 	CallLeft(ctx context.Context, userID, callID uuid.UUID, participant string) (bool, error)
 	CallMembers(ctx context.Context) ([]social.CallMember, error)
+	CallsOf(ctx context.Context, userID uuid.UUID) ([]social.CallMember, error)
 	EndIdleCalls(ctx context.Context) ([]uuid.UUID, error)
 }
 

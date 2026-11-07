@@ -49,6 +49,7 @@ type Guilds interface {
 	VoiceModerate(ctx context.Context, actorID, guildID, targetID uuid.UUID, need perm.Permissions) (guild.VoiceSubject, error)
 	VoiceMove(ctx context.Context, actorID, guildID, targetID, channelID uuid.UUID) (guild.VoiceSubject, error)
 	SetServerVoice(ctx context.Context, actorID, guildID, targetID uuid.UUID, in guild.ServerVoiceInput) (guild.VoiceState, error)
+	VoiceStateOf(ctx context.Context, userID uuid.UUID) (uuid.UUID, string, bool, error)
 }
 
 // Users gives the public profiles shown in a room; auth.Service implements it.
@@ -199,6 +200,40 @@ func (s *Service) Move(ctx context.Context, actorID, guildID, targetID, channelI
 		return err
 	}
 	return s.takeOut(ctx, targetID, *vs.State.ChannelID, vs.Participant)
+}
+
+// SignedOut takes the user out of their voice channel and their DM calls
+// (auth.SignOutListener; S4 of docs/audit/2026-11-04.md). After "sign out
+// everywhere", a password change, a device signed out or the account
+// deleted, a connection made with a revoked session must not stay: LiveKit
+// keeps it alive by itself. Participants are named by user, not session,
+// so every connection of the user goes; a device still signed in joins
+// again.
+func (s *Service) SignedOut(ctx context.Context, userID uuid.UUID) error {
+	var errs []error
+	if ch, participant, ok, err := s.guilds.VoiceStateOf(ctx, userID); err != nil {
+		errs = append(errs, err)
+	} else if ok {
+		errs = append(errs, s.takeOut(ctx, userID, ch, participant))
+	}
+	if s.calls != nil {
+		calls, err := s.calls.CallsOf(ctx, userID)
+		errs = append(errs, err)
+		for _, c := range calls {
+			if err := s.rooms.RemoveParticipant(ctx, callRoom(c.CallID), userID.String()); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			errs = append(errs, s.callLeft(ctx, userID, c.CallID, c.Participant))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// CleanupAccount takes a deleted account out of voice and calls
+// (auth.AccountCleanup): it is retried until it succeeds.
+func (s *Service) CleanupAccount(ctx context.Context, userID uuid.UUID) error {
+	return s.SignedOut(ctx, userID)
 }
 
 // takeOut removes someone from a channel's room and clears their state.

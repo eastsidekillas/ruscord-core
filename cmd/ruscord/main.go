@@ -202,6 +202,9 @@ func run() error {
 		voices := voice.NewService(lk, guilds, svc, limiter, cfg.LiveKitPublicURL, log)
 		guilds.WithVoice(voices)
 		voices.WithCalls(socials)
+		// A revoked session or a deleted account leaves voice and calls (S4).
+		svc.OnSignedOut(voices)
+		svc.OnAccountDeleted(voices)
 
 		if cfg.Has(config.RoleAPI) {
 			authHTTP := auth.NewHandler(svc, !cfg.IsDev())

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -71,6 +72,26 @@ func (s *Service) Sessions(ctx context.Context, p Principal) ([]SessionInfo, err
 	return list, nil
 }
 
+// SignOutListener ends what a user's sessions opened elsewhere when some
+// of them are revoked: voice keeps LiveKit connections alive on its own
+// (S4 of docs/audit/2026-11-04.md).
+type SignOutListener interface {
+	SignedOut(ctx context.Context, userID uuid.UUID) error
+}
+
+// OnSignedOut registers modules told about revoked sessions.
+func (s *Service) OnSignedOut(l ...SignOutListener) { s.signOuts = append(s.signOuts, l...) }
+
+// signedOut tells the listeners. The sessions are revoked already, so a
+// failure is logged, not returned; the voice reconcile catches up later.
+func (s *Service) signedOut(ctx context.Context, userID uuid.UUID) {
+	for _, l := range s.signOuts {
+		if err := l.SignedOut(ctx, userID); err != nil {
+			slog.WarnContext(ctx, "auth: a module did not end connections of revoked sessions", "user", userID, "err", err)
+		}
+	}
+}
+
 // RevokeSession signs one of the caller's devices out (the current one too).
 // Someone else's session and an inactive one are both 404.
 func (s *Service) RevokeSession(ctx context.Context, p Principal, id uuid.UUID) error {
@@ -88,6 +109,7 @@ func (s *Service) RevokeSession(ctx context.Context, p Principal, id uuid.UUID) 
 		return err
 	}
 	s.markRevoked(ctx, id)
+	s.signedOut(ctx, p.UserID)
 	return nil
 }
 
@@ -113,6 +135,9 @@ func (s *Service) RevokeOtherSessions(ctx context.Context, p Principal, in Passw
 		return 0, err
 	}
 	s.markRevoked(ctx, ids...)
+	if len(ids) > 0 {
+		s.signedOut(ctx, p.UserID)
+	}
 	return len(ids), nil
 }
 
@@ -151,6 +176,7 @@ func (s *Service) ChangePassword(ctx context.Context, p Principal, in ChangePass
 		return err
 	}
 	s.markRevoked(ctx, ids...)
+	s.signedOut(ctx, p.UserID)
 	return nil
 }
 

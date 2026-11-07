@@ -62,6 +62,8 @@ type Service struct {
 	guilds GuildIDs // for profile fan-out; nil means none
 	// cleanups run after an account is deleted (OnAccountDeleted).
 	cleanups []AccountCleanup
+	// signOuts are told when sessions of a user are revoked (OnSignedOut).
+	signOuts []SignOutListener
 	now      func() time.Time
 	dummy    string
 }

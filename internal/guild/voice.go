@@ -212,6 +212,16 @@ func (s *Service) VoiceLeft(ctx context.Context, userID, channelID uuid.UUID, pa
 	return cleared, err
 }
 
+// VoiceStateOf is the voice channel the user is in and the LiveKit
+// participant of that connection; ok is false when the user is in none.
+func (s *Service) VoiceStateOf(ctx context.Context, userID uuid.UUID) (channelID uuid.UUID, participant string, ok bool, err error) {
+	err = s.pg.QueryRow(ctx, `SELECT channel_id, participant FROM voice_states WHERE user_id = $1`, userID).Scan(&channelID, &participant)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, "", false, nil
+	}
+	return channelID, participant, err == nil, err
+}
+
 // SetSelfVoice records that userID muted or deafened themself in the voice
 // channel they are in; others see it next to their name.
 func (s *Service) SetSelfVoice(ctx context.Context, userID, channelID uuid.UUID, mute, deaf bool) (VoiceState, error) {
