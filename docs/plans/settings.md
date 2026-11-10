@@ -256,4 +256,4 @@ gateway. Обновить `api.md`, `discord-parity.md` (свой статус, 
 |---|---|
 | 1 Голос и видео, меню, проверка устройств | ruscord-fe `settings-voice`: сделано, тесты клиента и полный e2e зелёные |
 | 2 Настроение, цвет профиля, ADR-0046 | ruscord-core `settings-mood`: сделано, тесты и линтер зелёные ([план](settings-part-2.md)) |
-| 3 Редактор и карточка | ruscord-fe: не начато |
+| 3 Редактор и карточка | ruscord-fe `settings-profile`: сделано, тесты клиента и полный e2e зелёные ([план](settings-part-3.md)) |
