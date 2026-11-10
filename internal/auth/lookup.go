@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,27 +21,36 @@ type PublicUser struct {
 	Avatar *string `json:"avatar"`
 	// Deleted marks a deleted account; its name and avatar are not shown.
 	Deleted bool `json:"deleted,omitempty"`
+	// Mood is nil when unset or expired.
+	Mood *Mood `json:"mood,omitempty"`
+	// ProfileColor is one of ProfileColors.
+	ProfileColor string `json:"profile_color"`
 }
 
 // Public is the part of u that other users may see.
 func (u User) Public() PublicUser {
-	return PublicUser{ID: u.ID, Username: u.Username, DisplayName: u.DisplayName, Avatar: u.Avatar}
+	return PublicUser{ID: u.ID, Username: u.Username, DisplayName: u.DisplayName, Avatar: u.Avatar, Mood: u.Mood, ProfileColor: u.ProfileColor}
 }
 
-const publicCols = `id, username, display_name, avatar, deleted_at IS NOT NULL`
+const publicCols = `id, username, display_name, avatar, deleted_at IS NOT NULL, mood_state, mood_text, mood_expires_at, profile_color`
 
 // deletedName is what others see instead of a deleted account's names.
 const deletedName = "Удалённый пользователь"
 
 func scanPublic(row pgx.Row) (PublicUser, error) {
 	var u PublicUser
-	var avatar *string
-	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &avatar, &u.Deleted)
+	var avatar, moodState *string
+	var moodText string
+	var moodExpires *time.Time
+	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &avatar, &u.Deleted,
+		&moodState, &moodText, &moodExpires, &u.ProfileColor)
 	u.Avatar = blob.URLPtr(avatar)
+	u.Mood = liveMood(moodState, moodText, moodExpires, time.Now())
 	if u.Deleted {
 		// The row keeps its data (docs/adr/0021-bans-account-deletion.md);
 		// nobody is shown it.
 		u.Username, u.DisplayName, u.Avatar = "deleted", deletedName, nil
+		u.Mood, u.ProfileColor = nil, "accent"
 	}
 	return u, err
 }

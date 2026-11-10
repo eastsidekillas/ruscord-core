@@ -24,8 +24,11 @@ type User struct {
 	// Status is the presence the user chose (online, idle, dnd, invisible).
 	Status string `json:"status"`
 	// Avatar is the URL path of the avatar (/cdn/...), or null.
-	Avatar       *string `json:"avatar"`
-	Bio          string  `json:"bio"`
+	Avatar *string `json:"avatar"`
+	Bio    string  `json:"bio"`
+	Mood   *Mood   `json:"mood,omitempty"`
+	// ProfileColor is one of ProfileColors.
+	ProfileColor string `json:"profile_color"`
 	passwordHash string
 }
 
@@ -132,13 +135,17 @@ func (s *store) userByID(ctx context.Context, id uuid.UUID) (User, error) {
 		`SELECT `+userCols+` FROM users WHERE id = $1 AND deleted_at IS NULL`, id))
 }
 
-const userCols = `id, email, username, display_name, created_at, status, avatar, bio, password_hash`
+const userCols = `id, email, username, display_name, created_at, status, avatar, bio, mood_state, mood_text, mood_expires_at, profile_color, password_hash`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	var avatar *string
-	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.DisplayName, &u.CreatedAt, &u.Status, &avatar, &u.Bio, &u.passwordHash)
+	var avatar, moodState *string
+	var moodText string
+	var moodExpires *time.Time
+	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.DisplayName, &u.CreatedAt, &u.Status, &avatar, &u.Bio,
+		&moodState, &moodText, &moodExpires, &u.ProfileColor, &u.passwordHash)
 	u.Avatar = blob.URLPtr(avatar)
+	u.Mood = liveMood(moodState, moodText, moodExpires, time.Now())
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, errNotFound
 	}
