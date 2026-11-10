@@ -133,3 +133,38 @@ func TestClientInfoDevice(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveMood(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	state := "happy"
+	future, past := now.Add(time.Hour), now.Add(-time.Hour)
+	tests := []struct {
+		name    string
+		state   *string
+		text    string
+		expires *time.Time
+		want    *Mood
+	}{
+		{"no state", nil, "", nil, nil},
+		{"state without expiry", &state, "hi", nil, &Mood{State: "happy", Text: "hi"}},
+		{"expiry in the future", &state, "hi", &future, &Mood{State: "happy", Text: "hi", ExpiresAt: &future}},
+		{"expiry equal to now", &state, "hi", &now, nil},
+		{"expiry in the past", &state, "hi", &past, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := liveMood(tc.state, tc.text, tc.expires, now)
+			if (got == nil) != (tc.want == nil) {
+				t.Fatalf("liveMood = %+v, want %+v", got, tc.want)
+			}
+			if got == nil {
+				return
+			}
+			if got.State != tc.want.State || got.Text != tc.want.Text ||
+				(got.ExpiresAt == nil) != (tc.want.ExpiresAt == nil) ||
+				(got.ExpiresAt != nil && !got.ExpiresAt.Equal(*tc.want.ExpiresAt)) {
+				t.Fatalf("liveMood = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -102,6 +103,98 @@ func TestUpdateProfileValidation(t *testing.T) {
 	}
 }
 
+func TestUpdateMoodValidation(t *testing.T) {
+	e := newEnv(t)
+	u := e.User("timofey")
+	in := func(d time.Duration) string { return time.Now().Add(d).UTC().Format(time.RFC3339Nano) }
+	week := 7 * 24 * time.Hour
+	mood := func(m map[string]any) map[string]any { return map[string]any{"mood": m} }
+	cases := []struct {
+		name  string
+		body  map[string]any
+		code  int
+		field string
+	}{
+		{"state only", mood(map[string]any{"state": "happy"}), 200, ""},
+		{"unknown state", mood(map[string]any{"state": "bored"}), 422, "mood"},
+		{"text of 81", mood(map[string]any{"state": "happy", "text": strings.Repeat("я", 81)}), 422, "mood"},
+		{"NUL in text", mood(map[string]any{"state": "happy", "text": "a\x00b"}), 422, "mood"},
+		{"expiry in the past", mood(map[string]any{"state": "happy", "expires_at": in(-time.Minute)}), 422, "mood"},
+		// The client's clock may run a little ahead of the server's.
+		{"a week and a minute", mood(map[string]any{"state": "happy", "expires_at": in(week + time.Minute)}), 200, ""},
+		{"a week and ten minutes", mood(map[string]any{"state": "happy", "expires_at": in(week + 10*time.Minute)}), 422, "mood"},
+		{"text without a state", mood(map[string]any{"text": "x"}), 422, "mood"},
+		{"unknown field in mood", mood(map[string]any{"state": "happy", "emoji": "x"}), 400, ""},
+		{"unknown colour", map[string]any{"profile_color": "pink"}, 422, "profile_color"},
+		{"known colour", map[string]any{"profile_color": "neutral"}, 200, ""},
+	}
+	for _, c := range cases {
+		code, out := u.Do("PATCH", me, c.body)
+		if code != c.code {
+			t.Errorf("%s: %d %v, want %d", c.name, code, out, c.code)
+			continue
+		}
+		if c.field != "" {
+			if _, ok := obj(obj(out)["fields"])[c.field]; !ok {
+				t.Errorf("%s: no message for %s in %v", c.name, c.field, out)
+			}
+		}
+	}
+	// The longest text fits and loses the spaces around it.
+	text := strings.Repeat("я", 80)
+	got := obj(u.Expect(http.StatusOK, "PATCH", me, mood(map[string]any{"state": "angry", "text": "  " + text + " "})))
+	if m := obj(got["mood"]); m["state"] != "angry" || m["text"] != text || m["expires_at"] != nil {
+		t.Fatalf("saved %v", got)
+	}
+	if got["profile_color"] != "neutral" {
+		t.Fatalf("the colour changed with the mood: %v", got)
+	}
+}
+
+// A change of other fields keeps the mood and the colour; null clears the
+// mood only.
+func TestMoodSetKeepClear(t *testing.T) {
+	e := newEnv(t)
+	u := e.User("timofey")
+	if got := obj(u.Expect(http.StatusOK, "GET", me, nil)); got["profile_color"] != "accent" {
+		t.Fatalf("a new account: %v", got)
+	} else if _, ok := got["mood"]; ok {
+		t.Fatalf("a new account has a mood: %v", got)
+	}
+	expires := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	got := obj(u.Expect(http.StatusOK, "PATCH", me, map[string]any{
+		"mood":          map[string]any{"state": "sleeping", "text": "сплю", "expires_at": expires.Format(time.RFC3339)},
+		"profile_color": "success"}))
+	m := obj(got["mood"])
+	if at, err := time.Parse(time.RFC3339, str(m["expires_at"])); err != nil || !at.Equal(expires) ||
+		m["state"] != "sleeping" || m["text"] != "сплю" || got["profile_color"] != "success" {
+		t.Fatalf("set: %v", got)
+	}
+
+	got = obj(u.Expect(http.StatusOK, "PATCH", me, map[string]any{"bio": "x"}))
+	if obj(got["mood"])["state"] != "sleeping" || obj(got["mood"])["text"] != "сплю" || got["profile_color"] != "success" {
+		t.Fatalf("after a change of the bio: %v", got)
+	}
+
+	got = obj(u.Expect(http.StatusOK, "PATCH", me, map[string]any{"mood": nil}))
+	if _, ok := got["mood"]; ok || got["profile_color"] != "success" || got["bio"] != "x" {
+		t.Fatalf("after mood: null: %v", got)
+	}
+	var state *string
+	var text string
+	var at *time.Time
+	if err := e.PG.QueryRow(context.Background(), `SELECT mood_state, mood_text, mood_expires_at FROM users WHERE id = $1`, u.ID).
+		Scan(&state, &text, &at); err != nil || state != nil || text != "" || at != nil {
+		t.Fatalf("the row after mood: null: %v %q %v (%v)", state, text, at, err)
+	}
+
+	code, out := u.Do("PATCH", me, map[string]any{})
+	msg := str(obj(obj(out)["fields"])[""])
+	if code != 422 || !strings.Contains(msg, "mood") || !strings.Contains(msg, "profile_color") {
+		t.Fatalf("empty body: %d %v", code, out)
+	}
+}
+
 // Who hears about a change: the user's own sessions always; their guilds
 // only when what others see (name, avatar) changed.
 func TestProfileFanOut(t *testing.T) {
@@ -152,6 +245,53 @@ func TestProfileFanOut(t *testing.T) {
 	got := obj(u.Expect(http.StatusOK, "GET", me, nil))
 	if got["display_name"] != "Тима" || got["bio"] != "" || got["status"] != "dnd" {
 		t.Fatalf("after the steps: %v", got)
+	}
+}
+
+// The mood and the colour are what others see: a change goes to the guilds,
+// the same mood again does not.
+func TestMoodFanOut(t *testing.T) {
+	e := newEnv(t)
+	u := e.User("timofey")
+	guilds := e.inGuilds(u, 2)
+	mood := map[string]any{"mood": map[string]any{"state": "laughing", "text": "ха"}}
+
+	u.Expect(http.StatusOK, "PATCH", me, mood)
+	pub := e.Outbox("USER_PROFILE_UPDATE")
+	if got := topicsOf(pub); strings.Join(got, ",") != strings.Join(guilds, ",") {
+		t.Fatalf("a new mood: USER_PROFILE_UPDATE to %v, want %v", got, guilds)
+	}
+	if m := obj(obj(pub[0].Data["user"])["mood"]); m["state"] != "laughing" || m["text"] != "ха" {
+		t.Fatalf("a new mood: public user %v", pub[0].Data)
+	}
+
+	own := len(e.Outbox("USER_UPDATE"))
+	u.Expect(http.StatusOK, "PATCH", me, mood)
+	if n := len(e.Outbox("USER_PROFILE_UPDATE")); n != len(guilds) {
+		t.Fatalf("the same mood again told the guilds (%d events)", n)
+	}
+	if n := len(e.Outbox("USER_UPDATE")); n != own+1 {
+		t.Fatalf("the same mood again: %d USER_UPDATE, want %d", n, own+1)
+	}
+
+	u.Expect(http.StatusOK, "PATCH", me, map[string]any{"profile_color": "danger"})
+	pub = e.Outbox("USER_PROFILE_UPDATE")[len(guilds):]
+	if len(pub) != len(guilds) || obj(pub[0].Data["user"])["profile_color"] != "danger" ||
+		obj(obj(pub[0].Data["user"])["mood"])["state"] != "laughing" {
+		t.Fatalf("a new colour: %v", pub)
+	}
+	u.Expect(http.StatusOK, "PATCH", me, map[string]any{"profile_color": "danger"})
+	if n := len(e.Outbox("USER_PROFILE_UPDATE")); n != 2*len(guilds) {
+		t.Fatalf("the same colour again told the guilds (%d events)", n)
+	}
+
+	u.Expect(http.StatusOK, "PATCH", me, map[string]any{"mood": nil})
+	pub = e.Outbox("USER_PROFILE_UPDATE")[2*len(guilds):]
+	if len(pub) != len(guilds) {
+		t.Fatalf("clearing the mood: %d events, want %d", len(pub), len(guilds))
+	}
+	if _, ok := obj(pub[0].Data["user"])["mood"]; ok {
+		t.Fatalf("clearing the mood: public user %v", pub[0].Data)
 	}
 }
 

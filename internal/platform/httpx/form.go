@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -42,7 +43,8 @@ func Validation(fields map[string]string) *Error {
 }
 
 // Optional distinguishes an absent JSON field (Set false) from an explicit
-// null (Set true, Value nil).
+// null (Set true, Value nil). An object inside it is decoded as strictly as
+// DecodeJSON decodes the body: unknown fields are an error.
 type Optional[T any] struct {
 	Set   bool
 	Value *T
@@ -55,7 +57,9 @@ func (o *Optional[T]) UnmarshalJSON(b []byte) error {
 		return nil
 	}
 	var v T
-	if err := json.Unmarshal(b, &v); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&v); err != nil {
 		return err
 	}
 	o.Value = &v

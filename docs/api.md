@@ -39,7 +39,7 @@ origin задаёт `RUSCORD_ALLOWED_ORIGINS`.
 | `POST /auth/logout` | — (cookie `rc_rt`) | 204, стирает cookie | — |
 | `GET /users/@me` | — | 200, пользователь | 401 |
 | `POST /gateway/ticket` | — | 200 `{ticket, expires_in: 30}` | 401, 429 |
-| `PATCH /users/@me` | `{display_name?, bio?, status?}` | 200, пользователь | 401, 422, 429 |
+| `PATCH /users/@me` | `{display_name?, bio?, status?, mood?, profile_color?}` | 200, пользователь | 401, 422, 429 |
 | `PUT /users/@me/avatar` | картинка (тело запроса) | 200, пользователь | 401, 413, 422, 429, 503 |
 | `DELETE /users/@me/avatar` | — | 200, пользователь | 401, 429 |
 | `GET /users/{id}/profile` | — | 200, `{user, bio}` | 401, 404 |
@@ -49,10 +49,12 @@ origin задаёт `RUSCORD_ALLOWED_ORIGINS`.
 | `POST /users/@me/sessions/revoke-others` | `{password}` | 200, `{revoked: n}` | 401, 403 `wrong_password`, 429 |
 | `POST /users/@me/password` | `{current_password, new_password}` | 204 | 401, 403 `wrong_password`, 422, 429 |
 
-Пользователь: `{id, email, username, display_name, created_at, status, avatar, bio}`.
+Пользователь: `{id, email, username, display_name, created_at, status, avatar,
+bio, mood?, profile_color}`.
 Публичный пользователь (в участниках, связях, личках, профиле):
-`{id, username, display_name, avatar, deleted?}`. У удалённого аккаунта
-`deleted: true`, `display_name` «Удалённый пользователь», без имени и аватара.
+`{id, username, display_name, avatar, deleted?, mood?, profile_color}`. У
+удалённого аккаунта `deleted: true`, `display_name` «Удалённый пользователь»,
+без имени, аватара и настроения, `profile_color` — `accent`.
 
 Удаление аккаунта (ADR-0021): пароль ещё раз; владелец серверов сначала
 удаляет их. Сразу закрываются все сессии и сокеты; аккаунт выходит из
@@ -73,6 +75,24 @@ current}`. `device` — User-Agent при входе, `ip` — адрес пос
 `PATCH /users/@me` меняет только переданные поля (`null` = не передано), нужно
 хотя бы одно: `display_name` 1–32 символа, `bio` («о себе») до 190 символов,
 пробелы по краям обрезаются. 10 изменений в минуту.
+
+`mood` — настроение (ADR-0046): `{state, text?, expires_at?}`. В отличие от
+остальных полей, `mood: null` очищает настроение; отсутствие поля его не
+меняет.
+- `state` — лицо долобеба: `happy`, `laughing`, `thinking`, `sleeping`,
+  `listening`, `surprised`, `confused` или `angry`;
+- `text` — фраза до 80 символов, пробелы по краям обрезаются;
+- `expires_at` — срок (RFC 3339): в будущем и не дальше 7 дней; без него
+  настроение бессрочное.
+
+В ответах `mood` — `{state, text, expires_at}` или поля нет: настроения нет
+или его срок вышел. События об истечении нет, клиент прячет настроение сам по
+`expires_at`.
+
+`profile_color` — цвет карточки профиля, имя токена темы: `accent` (по
+умолчанию), `success`, `warning`, `danger` или `neutral`.
+
+Смену настроения и цвета другие узнают событием `USER_PROFILE_UPDATE`.
 
 `status` — статус, который пользователь выбрал: `online`, `idle`, `dnd` или
 `invisible`. Другие видят `offline`, если вы не в сети или выбрали `invisible`
@@ -539,14 +559,14 @@ Heartbeat нужно слать каждые `heartbeat_interval` (30 с); бе�
 | `MESSAGE_*` в канале сервера | тем, кто видит канал (`VIEW_CHANNEL`) |
 | `MESSAGE_*` в личке, `CHANNEL_*` личек, `CHANNEL_RECIPIENT_*` | участникам лички |
 | `RELATIONSHIP_*` | вам |
-| `USER_UPDATE` | вашим сессиям, когда изменился ваш аккаунт (имя, «о себе», аватар, выбранный статус); полный пользователь |
+| `USER_UPDATE` | вашим сессиям, когда изменился ваш аккаунт (имя, «о себе», аватар, выбранный статус, настроение, цвет профиля); полный пользователь |
 | `VOICE_STATE_UPDATE` | участникам сервера, кто видит голосовой канал: вошёл, вышел, выключил микрофон или звук; голосовое состояние, `channel_id: null` — вышел (так же выглядит переход в скрытый от вас канал). Когда канал становится видимым, после `CHANNEL_CREATE` приходят состояния тех, кто в нём |
 | `VOICE_MOVE {guild_id, channel_id, from_channel_id}` | вашим сессиям, когда модератор перенёс вас в другой голосовой канал: клиент, который был в `from_channel_id`, входит в `channel_id` (`POST /channels/{id}/voice`). Из старой комнаты ядро выводит сразу (ADR-0031) |
 | `CALL_CREATE`, `CALL_UPDATE` | получателям лички: звонок `{id, channel_id, started_by, started_at, ringing, ring_until, members}`. Звонить перестают в `ring_until`, отдельного события нет (ADR-0032) |
 | `CALL_DELETE {id, channel_id}` | получателям лички: звонок закончился |
 | `SESSION_CREATE` | вашим другим сессиям, когда вы вошли на новом устройстве; сессия без `current` |
 | `SESSION_REVOKE` | вашим другим сессиям, когда одна из ваших сессий завершена; `{session_id}`. Сокеты самой завершённой сессии закрываются с кодом 4004 |
-| `USER_PROFILE_UPDATE {user}` | участникам ваших серверов, когда изменились имя или аватар; публичный пользователь. Одно изменение приходит один раз, сколько бы общих серверов ни было |
+| `USER_PROFILE_UPDATE {user}` | участникам ваших серверов, когда изменились имя, аватар, настроение или цвет профиля; публичный пользователь. Одно изменение приходит один раз, сколько бы общих серверов ни было |
 | `TYPING_START` | тем, кто видит канал; кроме вас самих |
 | `PRESENCE_UPDATE {user_id, status}` | друзьям и участникам общих серверов до 250 человек; одно изменение приходит один раз, даже если вы делите несколько серверов |
 

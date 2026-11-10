@@ -37,3 +37,18 @@ func TestOptional(t *testing.T) {
 		t.Fatalf("got %+v", in)
 	}
 }
+
+// An object inside Optional is as strict as the body around it.
+func TestOptionalRejectsUnknownFields(t *testing.T) {
+	var in struct {
+		A Optional[struct {
+			X string `json:"x"`
+		}] `json:"a"`
+	}
+	if err := json.Unmarshal([]byte(`{"a": {"x": "1"}}`), &in); err != nil || in.A.Value.X != "1" {
+		t.Fatalf("known field: %v %+v", err, in)
+	}
+	if err := json.Unmarshal([]byte(`{"a": {"x": "1", "y": 2}}`), &in); err == nil {
+		t.Fatal("an unknown field inside Optional was accepted")
+	}
+}

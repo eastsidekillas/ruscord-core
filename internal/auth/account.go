@@ -58,7 +58,11 @@ func (s *Service) DeleteMe(ctx context.Context, p Principal, in DeleteMeInput) e
 	now := s.now().UTC()
 	var revoked []uuid.UUID
 	err := pgx.BeginFunc(ctx, s.store.pg, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE users SET deleted_at = $2 WHERE id = $1 AND deleted_at IS NULL`, p.UserID, now)
+		// The mood goes with the account; the rest of the row stays
+		// (docs/adr/0021-bans-account-deletion.md).
+		tag, err := tx.Exec(ctx,
+			`UPDATE users SET deleted_at = $2, mood_state = NULL, mood_text = '', mood_expires_at = NULL
+			 WHERE id = $1 AND deleted_at IS NULL`, p.UserID, now)
 		if err != nil {
 			return err
 		}

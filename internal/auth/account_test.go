@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/message"
@@ -81,7 +82,18 @@ func TestDeleteAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	bob.Expect(http.StatusOK, "PATCH", me, map[string]any{
+		"mood": map[string]any{"state": "happy", "text": "ухожу", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}})
 	bob.Expect(http.StatusNoContent, "DELETE", me, map[string]any{"password": apitest.Password})
+
+	// The mood goes with the account.
+	var moodState *string
+	var moodText string
+	var moodExpires *time.Time
+	if err := e.PG.QueryRow(ctx, `SELECT mood_state, mood_text, mood_expires_at FROM users WHERE id = $1`, bob.ID).
+		Scan(&moodState, &moodText, &moodExpires); err != nil || moodState != nil || moodText != "" || moodExpires != nil {
+		t.Fatalf("the mood of a deleted account: %v %q %v (%v)", moodState, moodText, moodExpires, err)
+	}
 
 	// Bob cannot do anything, even with an access token still in date.
 	bob.Expect(http.StatusUnauthorized, "GET", me, nil)
@@ -153,6 +165,73 @@ func TestDeleteAccount(t *testing.T) {
 	}
 	if n, _ := e.Auth.SweepDeletedAccounts(ctx); n != 0 {
 		t.Fatal("a finished account was swept again")
+	}
+}
+
+// publicViews is what ann gets of bob: his profile and his row in the
+// members of the guild they share.
+func (e *deletionEnv) publicViews(ann, bob *apitest.User, guildID string) []map[string]any {
+	e.T.Helper()
+	views := []map[string]any{
+		obj(obj(ann.Expect(http.StatusOK, "GET", "/api/v1/users/"+bob.ID.String()+"/profile", nil))["user"]),
+	}
+	for _, m := range list(ann.Expect(http.StatusOK, "GET", "/api/v1/guilds/"+guildID+"/members", nil)) {
+		if str(obj(m)["user_id"]) == bob.ID.String() {
+			views = append(views, obj(obj(m)["user"]))
+		}
+	}
+	return views
+}
+
+// Expiry is applied on read: nothing clears the columns, nobody is shown
+// the mood after its time.
+func TestExpiredMoodHidden(t *testing.T) {
+	e := newDeletionEnv(t)
+	ann, bob := e.User("ann"), e.User("bob")
+	ctx := context.Background()
+	g, err := e.guilds.Create(ctx, ann.ID, guild.CreateGuildInput{Name: "Сервер"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.guilds.AddMember(ctx, g.ID, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	bob.Expect(http.StatusOK, "PATCH", me, map[string]any{
+		"mood": map[string]any{"state": "thinking", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}})
+	views := e.publicViews(ann, bob, g.ID.String())
+	if len(views) != 2 {
+		t.Fatalf("bob in %d views, want the profile and the member", len(views))
+	}
+	for _, v := range views {
+		if obj(v["mood"])["state"] != "thinking" {
+			t.Fatalf("a live mood is not shown: %v", v)
+		}
+	}
+
+	if _, err := e.PG.Exec(ctx, `UPDATE users SET mood_expires_at = now() - interval '1 second' WHERE id = $1`, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	views = append(e.publicViews(ann, bob, g.ID.String()), obj(bob.Expect(http.StatusOK, "GET", me, nil)))
+	for _, v := range views {
+		if _, ok := v["mood"]; ok || len(v) == 0 {
+			t.Fatalf("an expired mood is shown: %v", v)
+		}
+	}
+}
+
+// A deleted account shows neither its mood nor its colour.
+func TestDeletedUserHasNoMood(t *testing.T) {
+	e := newDeletionEnv(t)
+	ann, bob := e.User("ann"), e.User("bob")
+	// A DM keeps bob's profile visible to ann after he is gone.
+	befriend(ann, bob)
+	ann.Expect(http.StatusOK, "POST", "/api/v1/users/@me/channels", map[string]any{"recipient_id": bob.ID})
+	bob.Expect(http.StatusOK, "PATCH", me, map[string]any{
+		"mood": map[string]any{"state": "angry", "text": "ухожу"}, "profile_color": "danger"})
+	bob.Expect(http.StatusNoContent, "DELETE", me, map[string]any{"password": apitest.Password})
+	u := obj(obj(ann.Expect(http.StatusOK, "GET", "/api/v1/users/"+bob.ID.String()+"/profile", nil))["user"])
+	if _, ok := u["mood"]; ok || u["deleted"] != true || u["profile_color"] != "accent" {
+		t.Fatalf("a deleted account: %v", u)
 	}
 }
 
