@@ -434,6 +434,11 @@ func TestRouteProfileUpdate(t *testing.T) {
 	profile := func(id uuid.UUID, name string) map[string]any {
 		return map[string]any{"user": map[string]any{"id": id, "username": "u", "display_name": name, "avatar": nil}}
 	}
+	withMood := func(id uuid.UUID, name, state string) map[string]any {
+		p := profile(id, name)
+		p["user"].(map[string]any)["mood"] = map[string]any{"state": state, "text": "", "expires_at": nil}
+		return p
+	}
 	at := func(topic string, id int64, data any) event {
 		e := ev(topic, events.UserProfileUpdate, data)
 		e.ID = id
@@ -454,6 +459,9 @@ func TestRouteProfileUpdate(t *testing.T) {
 		{"from a guild I am not in", at(events.GuildTopic(uuid.New()), 124, profile(f.other, "C")), 0},
 		{"no user id", at(g1, 125, map[string]any{"user": map[string]any{"display_name": "x"}}), 0},
 		{"malformed", event{Subject: g1, Type: events.UserProfileUpdate, Data: json.RawMessage(`[1]`), ID: 126}, 0},
+		{"the same name with a mood", at(g1, 127, withMood(f.other, "A", "happy")), 1},
+		{"its copy from the other guild", at(g2, 128, withMood(f.other, "A", "happy")), 0},
+		{"another mood", at(g1, 129, withMood(f.other, "A", "angry")), 1},
 	}
 	r := newRouter(f.me, f.authSID, fakeLoader{}, []guild.Snapshot{first, snap2}, nil)
 	for _, s := range steps {

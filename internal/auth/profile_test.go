@@ -248,6 +248,53 @@ func TestProfileFanOut(t *testing.T) {
 	}
 }
 
+// The mood and the colour are what others see: a change goes to the guilds,
+// the same mood again does not.
+func TestMoodFanOut(t *testing.T) {
+	e := newEnv(t)
+	u := e.User("timofey")
+	guilds := e.inGuilds(u, 2)
+	mood := map[string]any{"mood": map[string]any{"state": "laughing", "text": "ха"}}
+
+	u.Expect(http.StatusOK, "PATCH", me, mood)
+	pub := e.Outbox("USER_PROFILE_UPDATE")
+	if got := topicsOf(pub); strings.Join(got, ",") != strings.Join(guilds, ",") {
+		t.Fatalf("a new mood: USER_PROFILE_UPDATE to %v, want %v", got, guilds)
+	}
+	if m := obj(obj(pub[0].Data["user"])["mood"]); m["state"] != "laughing" || m["text"] != "ха" {
+		t.Fatalf("a new mood: public user %v", pub[0].Data)
+	}
+
+	own := len(e.Outbox("USER_UPDATE"))
+	u.Expect(http.StatusOK, "PATCH", me, mood)
+	if n := len(e.Outbox("USER_PROFILE_UPDATE")); n != len(guilds) {
+		t.Fatalf("the same mood again told the guilds (%d events)", n)
+	}
+	if n := len(e.Outbox("USER_UPDATE")); n != own+1 {
+		t.Fatalf("the same mood again: %d USER_UPDATE, want %d", n, own+1)
+	}
+
+	u.Expect(http.StatusOK, "PATCH", me, map[string]any{"profile_color": "danger"})
+	pub = e.Outbox("USER_PROFILE_UPDATE")[len(guilds):]
+	if len(pub) != len(guilds) || obj(pub[0].Data["user"])["profile_color"] != "danger" ||
+		obj(obj(pub[0].Data["user"])["mood"])["state"] != "laughing" {
+		t.Fatalf("a new colour: %v", pub)
+	}
+	u.Expect(http.StatusOK, "PATCH", me, map[string]any{"profile_color": "danger"})
+	if n := len(e.Outbox("USER_PROFILE_UPDATE")); n != 2*len(guilds) {
+		t.Fatalf("the same colour again told the guilds (%d events)", n)
+	}
+
+	u.Expect(http.StatusOK, "PATCH", me, map[string]any{"mood": nil})
+	pub = e.Outbox("USER_PROFILE_UPDATE")[2*len(guilds):]
+	if len(pub) != len(guilds) {
+		t.Fatalf("clearing the mood: %d events, want %d", len(pub), len(guilds))
+	}
+	if _, ok := obj(pub[0].Data["user"])["mood"]; ok {
+		t.Fatalf("clearing the mood: public user %v", pub[0].Data)
+	}
+}
+
 func TestAvatar(t *testing.T) {
 	e := newEnv(t)
 	u := e.User("timofey")
