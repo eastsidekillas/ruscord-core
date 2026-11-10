@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/eastsidekillas/ruscord-core/internal/guild"
 	"github.com/eastsidekillas/ruscord-core/internal/message"
@@ -81,7 +82,18 @@ func TestDeleteAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	bob.Expect(http.StatusOK, "PATCH", me, map[string]any{
+		"mood": map[string]any{"state": "happy", "text": "ухожу", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}})
 	bob.Expect(http.StatusNoContent, "DELETE", me, map[string]any{"password": apitest.Password})
+
+	// The mood goes with the account.
+	var moodState *string
+	var moodText string
+	var moodExpires *time.Time
+	if err := e.PG.QueryRow(ctx, `SELECT mood_state, mood_text, mood_expires_at FROM users WHERE id = $1`, bob.ID).
+		Scan(&moodState, &moodText, &moodExpires); err != nil || moodState != nil || moodText != "" || moodExpires != nil {
+		t.Fatalf("the mood of a deleted account: %v %q %v (%v)", moodState, moodText, moodExpires, err)
+	}
 
 	// Bob cannot do anything, even with an access token still in date.
 	bob.Expect(http.StatusUnauthorized, "GET", me, nil)
